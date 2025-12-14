@@ -72,8 +72,7 @@ Licensee MAY:
 a) Core Contributor status may be revoked indefinitely by the remaining Core Contributors if:
 
 - A Core Contributor cannot be reached for a period of one (1) month through reasonable means of communication (including but not limited to email, Discord, GitHub, or other project communication channels)
-- AND the Core Contributor has not contributed to the project during that one-month period
-- For purposes of this section, "contributed" means at least one of the following activities:
+- AND the Core Contributor has not contributed to the project during that one-month period. For purposes of this section, "contributed" means at least one of the following activities:
   - Discussing the Software through project communication channels
   - Committing code changes to the project repository
   - Submitting bug fixes or patches
