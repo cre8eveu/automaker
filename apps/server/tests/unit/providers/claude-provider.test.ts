@@ -160,7 +160,7 @@ describe("claude-provider.ts", () => {
       });
     });
 
-    it("should handle conversation history", async () => {
+    it("should handle conversation history with sdkSessionId using resume option", async () => {
       vi.mocked(sdk.query).mockReturnValue(
         (async function* () {
           yield { type: "text", text: "test" };
@@ -176,13 +176,18 @@ describe("claude-provider.ts", () => {
         prompt: "Current message",
         cwd: "/test",
         conversationHistory,
+        sdkSessionId: "test-session-id",
       });
 
       await collectAsyncGenerator(generator);
 
-      // Should pass an async generator as prompt
-      const callArgs = vi.mocked(sdk.query).mock.calls[0][0];
-      expect(typeof callArgs.prompt).not.toBe("string");
+      // Should use resume option when sdkSessionId is provided with history
+      expect(sdk.query).toHaveBeenCalledWith({
+        prompt: "Current message",
+        options: expect.objectContaining({
+          resume: "test-session-id",
+        }),
+      });
     });
 
     it("should handle array prompt (with images)", async () => {
