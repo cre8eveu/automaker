@@ -487,17 +487,20 @@ export class AutoModeService {
 
     try {
       // Check if feature has existing context - if so, resume instead of starting fresh
-      const hasExistingContext = await this.contextExists(
-        projectPath,
-        featureId
-      );
-      if (hasExistingContext) {
-        console.log(
-          `[AutoMode] Feature ${featureId} has existing context, resuming instead of starting fresh`
+      // Skip this check if we're already being called with a continuation prompt (from resumeFeature)
+      if (!options?.continuationPrompt) {
+        const hasExistingContext = await this.contextExists(
+          projectPath,
+          featureId
         );
-        // Remove from running features temporarily, resumeFeature will add it back
-        this.runningFeatures.delete(featureId);
-        return this.resumeFeature(projectPath, featureId, useWorktrees);
+        if (hasExistingContext) {
+          console.log(
+            `[AutoMode] Feature ${featureId} has existing context, resuming instead of starting fresh`
+          );
+          // Remove from running features temporarily, resumeFeature will add it back
+          this.runningFeatures.delete(featureId);
+          return this.resumeFeature(projectPath, featureId, useWorktrees);
+        }
       }
 
       // Emit feature start event early
