@@ -4,6 +4,7 @@ import {
   FeatureImage,
   AgentModel,
   ThinkingLevel,
+  PlanningMode,
   useAppStore,
 } from "@/store/app-store";
 import { FeatureImagePath as DescriptionImagePath } from "@/components/ui/description-image-dropzone";
@@ -96,6 +97,8 @@ export function useBoardActions({
       thinkingLevel: ThinkingLevel;
       branchName: string;
       priority: number;
+      planningMode: PlanningMode;
+      requirePlanApproval: boolean;
     }) => {
       // Simplified: Only store branchName, no worktree creation on add
       // Worktrees are created at execution time (when feature starts)
@@ -132,6 +135,8 @@ export function useBoardActions({
         imagePaths: DescriptionImagePath[];
         branchName: string;
         priority: number;
+        planningMode?: PlanningMode;
+        requirePlanApproval?: boolean;
       }
     ) => {
       const finalBranchName =

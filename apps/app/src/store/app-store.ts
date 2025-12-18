@@ -263,6 +263,9 @@ export type ModelProvider = "claude";
 // Thinking level (budget_tokens) options
 export type ThinkingLevel = "none" | "low" | "medium" | "high" | "ultrathink";
 
+// Planning mode for feature specifications
+export type PlanningMode = 'skip' | 'lite' | 'spec' | 'full';
+
 // AI Provider Profile - user-defined presets for model configurations
 export interface AIProfile {
   id: string;
@@ -299,6 +302,32 @@ export interface Feature {
   // Branch info - worktree path is derived at runtime from branchName
   branchName?: string; // Name of the feature branch (undefined = use current worktree)
   justFinishedAt?: string; // ISO timestamp when agent just finished and moved to waiting_approval (shows badge for 2 minutes)
+  planningMode?: PlanningMode; // Planning mode for this feature
+  planSpec?: PlanSpec; // Generated spec/plan data
+  requirePlanApproval?: boolean; // Whether to pause and require manual approval before implementation
+}
+
+// Parsed task from spec (for spec and full planning modes)
+export interface ParsedTask {
+  id: string;          // e.g., "T001"
+  description: string; // e.g., "Create user model"
+  filePath?: string;   // e.g., "src/models/user.ts"
+  phase?: string;      // e.g., "Phase 1: Foundation" (for full mode)
+  status: 'pending' | 'in_progress' | 'completed' | 'failed';
+}
+
+// PlanSpec status for feature planning/specification
+export interface PlanSpec {
+  status: 'pending' | 'generating' | 'generated' | 'approved' | 'rejected';
+  content?: string; // The actual spec/plan markdown content
+  version: number;
+  generatedAt?: string; // ISO timestamp
+  approvedAt?: string; // ISO timestamp
+  reviewedByUser: boolean; // True if user has seen the spec
+  tasksCompleted?: number;
+  tasksTotal?: number;
+  currentTaskId?: string; // ID of the task currently being worked on
+  tasks?: ParsedTask[];   // Parsed tasks from the spec
 }
 
 // File tree node for project analysis
@@ -462,6 +491,18 @@ export interface AppState {
   // Spec Creation State (per-project, keyed by project path)
   // Tracks which project is currently having its spec generated
   specCreatingForProject: string | null;
+
+  defaultPlanningMode: PlanningMode;
+  defaultRequirePlanApproval: boolean;
+
+  // Plan Approval State
+  // When a plan requires user approval, this holds the pending approval details
+  pendingPlanApproval: {
+    featureId: string;
+    projectPath: string;
+    planContent: string;
+    planningMode: "lite" | "spec" | "full";
+  } | null;
 }
 
 // Default background settings for board backgrounds
@@ -699,6 +740,17 @@ export interface AppActions {
   setSpecCreatingForProject: (projectPath: string | null) => void;
   isSpecCreatingForProject: (projectPath: string) => boolean;
 
+  setDefaultPlanningMode: (mode: PlanningMode) => void;
+  setDefaultRequirePlanApproval: (require: boolean) => void;
+
+  // Plan Approval actions
+  setPendingPlanApproval: (approval: {
+    featureId: string;
+    projectPath: string;
+    planContent: string;
+    planningMode: "lite" | "spec" | "full";
+  } | null) => void;
+
   // Reset
   reset: () => void;
 }
@@ -787,6 +839,9 @@ const initialState: AppState = {
     defaultFontSize: 14,
   },
   specCreatingForProject: null,
+  defaultPlanningMode: 'skip' as PlanningMode,
+  defaultRequirePlanApproval: false,
+  pendingPlanApproval: null,
 };
 
 export const useAppStore = create<AppState & AppActions>()(
@@ -2208,6 +2263,12 @@ export const useAppStore = create<AppState & AppActions>()(
         return get().specCreatingForProject === projectPath;
       },
 
+      setDefaultPlanningMode: (mode) => set({ defaultPlanningMode: mode }),
+      setDefaultRequirePlanApproval: (require) => set({ defaultRequirePlanApproval: require }),
+
+      // Plan Approval actions
+      setPendingPlanApproval: (approval) => set({ pendingPlanApproval: approval }),
+
       // Reset
       reset: () => set(initialState),
     }),
@@ -2277,6 +2338,8 @@ export const useAppStore = create<AppState & AppActions>()(
         lastSelectedSessionByProject: state.lastSelectedSessionByProject,
         // Board background settings
         boardBackgroundByProject: state.boardBackgroundByProject,
+        defaultPlanningMode: state.defaultPlanningMode,
+        defaultRequirePlanApproval: state.defaultRequirePlanApproval,
       }),
     }
   )

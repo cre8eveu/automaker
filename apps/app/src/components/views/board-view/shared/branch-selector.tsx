@@ -35,7 +35,7 @@ export function BranchSelector({
       <Label htmlFor={`${testIdPrefix}-selector`}>Target Branch</Label>
       <RadioGroup
         value={useCurrentBranch ? "current" : "other"}
-        onValueChange={(value) => onUseCurrentBranchChange(value === "current")}
+        onValueChange={(value: string) => onUseCurrentBranchChange(value === "current")}
         disabled={disabled}
         data-testid={`${testIdPrefix}-radio-group`}
       >

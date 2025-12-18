@@ -20,11 +20,284 @@ import { buildPromptWithImages } from "../lib/prompt-builder.js";
 import { resolveModelString, DEFAULT_MODELS } from "../lib/model-resolver.js";
 import { createAutoModeOptions } from "../lib/sdk-options.js";
 import { isAbortError, classifyError } from "../lib/error-handler.js";
+import { resolveDependencies, areDependenciesSatisfied } from "../lib/dependency-resolver.js";
 import type { Feature } from "./feature-loader.js";
 import { FeatureLoader } from "./feature-loader.js";
-import { getFeatureDir, getAutomakerDir } from "../lib/automaker-paths.js";
+import { getFeatureDir, getAutomakerDir, getFeaturesDir } from "../lib/automaker-paths.js";
 
 const execAsync = promisify(exec);
+
+// Planning mode types for spec-driven development
+type PlanningMode = 'skip' | 'lite' | 'spec' | 'full';
+
+interface ParsedTask {
+  id: string;          // e.g., "T001"
+  description: string; // e.g., "Create user model"
+  filePath?: string;   // e.g., "src/models/user.ts"
+  phase?: string;      // e.g., "Phase 1: Foundation" (for full mode)
+  status: 'pending' | 'in_progress' | 'completed' | 'failed';
+}
+
+interface PlanSpec {
+  status: 'pending' | 'generating' | 'generated' | 'approved' | 'rejected';
+  content?: string;
+  version: number;
+  generatedAt?: string;
+  approvedAt?: string;
+  reviewedByUser: boolean;
+  tasksCompleted?: number;
+  tasksTotal?: number;
+  currentTaskId?: string;
+  tasks?: ParsedTask[];
+}
+
+const PLANNING_PROMPTS = {
+  lite: `## Planning Phase (Lite Mode)
+
+IMPORTANT: Do NOT output exploration text, tool usage, or thinking before the plan. Start DIRECTLY with the planning outline format below. Silently analyze the codebase first, then output ONLY the structured plan.
+
+Create a brief planning outline:
+
+1. **Goal**: What are we accomplishing? (1 sentence)
+2. **Approach**: How will we do it? (2-3 sentences)
+3. **Files to Touch**: List files and what changes
+4. **Tasks**: Numbered task list (3-7 items)
+5. **Risks**: Any gotchas to watch for
+
+After generating the outline, output:
+"[PLAN_GENERATED] Planning outline complete."
+
+Then proceed with implementation.`,
+
+  lite_with_approval: `## Planning Phase (Lite Mode)
+
+IMPORTANT: Do NOT output exploration text, tool usage, or thinking before the plan. Start DIRECTLY with the planning outline format below. Silently analyze the codebase first, then output ONLY the structured plan.
+
+Create a brief planning outline:
+
+1. **Goal**: What are we accomplishing? (1 sentence)
+2. **Approach**: How will we do it? (2-3 sentences)
+3. **Files to Touch**: List files and what changes
+4. **Tasks**: Numbered task list (3-7 items)
+5. **Risks**: Any gotchas to watch for
+
+After generating the outline, output:
+"[SPEC_GENERATED] Please review the planning outline above. Reply with 'approved' to proceed or provide feedback for revisions."
+
+DO NOT proceed with implementation until you receive explicit approval.`,
+
+  spec: `## Specification Phase (Spec Mode)
+
+IMPORTANT: Do NOT output exploration text, tool usage, or thinking before the spec. Start DIRECTLY with the specification format below. Silently analyze the codebase first, then output ONLY the structured specification.
+
+Generate a specification with an actionable task breakdown. WAIT for approval before implementing.
+
+### Specification Format
+
+1. **Problem**: What problem are we solving? (user perspective)
+
+2. **Solution**: Brief approach (1-2 sentences)
+
+3. **Acceptance Criteria**: 3-5 items in GIVEN-WHEN-THEN format
+   - GIVEN [context], WHEN [action], THEN [outcome]
+
+4. **Files to Modify**:
+   | File | Purpose | Action |
+   |------|---------|--------|
+   | path/to/file | description | create/modify/delete |
+
+5. **Implementation Tasks**:
+   Use this EXACT format for each task (the system will parse these):
+   \`\`\`tasks
+   - [ ] T001: [Description] | File: [path/to/file]
+   - [ ] T002: [Description] | File: [path/to/file]
+   - [ ] T003: [Description] | File: [path/to/file]
+   \`\`\`
+
+   Task ID rules:
+   - Sequential: T001, T002, T003, etc.
+   - Description: Clear action (e.g., "Create user model", "Add API endpoint")
+   - File: Primary file affected (helps with context)
+   - Order by dependencies (foundational tasks first)
+
+6. **Verification**: How to confirm feature works
+
+After generating the spec, output on its own line:
+"[SPEC_GENERATED] Please review the specification above. Reply with 'approved' to proceed or provide feedback for revisions."
+
+DO NOT proceed with implementation until you receive explicit approval.
+
+When approved, execute tasks SEQUENTIALLY in order. For each task:
+1. BEFORE starting, output: "[TASK_START] T###: Description"
+2. Implement the task
+3. AFTER completing, output: "[TASK_COMPLETE] T###: Brief summary"
+
+This allows real-time progress tracking during implementation.`,
+
+  full: `## Full Specification Phase (Full SDD Mode)
+
+IMPORTANT: Do NOT output exploration text, tool usage, or thinking before the spec. Start DIRECTLY with the specification format below. Silently analyze the codebase first, then output ONLY the structured specification.
+
+Generate a comprehensive specification with phased task breakdown. WAIT for approval before implementing.
+
+### Specification Format
+
+1. **Problem Statement**: 2-3 sentences from user perspective
+
+2. **User Story**: As a [user], I want [goal], so that [benefit]
+
+3. **Acceptance Criteria**: Multiple scenarios with GIVEN-WHEN-THEN
+   - **Happy Path**: GIVEN [context], WHEN [action], THEN [expected outcome]
+   - **Edge Cases**: GIVEN [edge condition], WHEN [action], THEN [handling]
+   - **Error Handling**: GIVEN [error condition], WHEN [action], THEN [error response]
+
+4. **Technical Context**:
+   | Aspect | Value |
+   |--------|-------|
+   | Affected Files | list of files |
+   | Dependencies | external libs if any |
+   | Constraints | technical limitations |
+   | Patterns to Follow | existing patterns in codebase |
+
+5. **Non-Goals**: What this feature explicitly does NOT include
+
+6. **Implementation Tasks**:
+   Use this EXACT format for each task (the system will parse these):
+   \`\`\`tasks
+   ## Phase 1: Foundation
+   - [ ] T001: [Description] | File: [path/to/file]
+   - [ ] T002: [Description] | File: [path/to/file]
+
+   ## Phase 2: Core Implementation
+   - [ ] T003: [Description] | File: [path/to/file]
+   - [ ] T004: [Description] | File: [path/to/file]
+
+   ## Phase 3: Integration & Testing
+   - [ ] T005: [Description] | File: [path/to/file]
+   - [ ] T006: [Description] | File: [path/to/file]
+   \`\`\`
+
+   Task ID rules:
+   - Sequential across all phases: T001, T002, T003, etc.
+   - Description: Clear action verb + target
+   - File: Primary file affected
+   - Order by dependencies within each phase
+   - Phase structure helps organize complex work
+
+7. **Success Metrics**: How we know it's done (measurable criteria)
+
+8. **Risks & Mitigations**:
+   | Risk | Mitigation |
+   |------|------------|
+   | description | approach |
+
+After generating the spec, output on its own line:
+"[SPEC_GENERATED] Please review the comprehensive specification above. Reply with 'approved' to proceed or provide feedback for revisions."
+
+DO NOT proceed with implementation until you receive explicit approval.
+
+When approved, execute tasks SEQUENTIALLY by phase. For each task:
+1. BEFORE starting, output: "[TASK_START] T###: Description"
+2. Implement the task
+3. AFTER completing, output: "[TASK_COMPLETE] T###: Brief summary"
+
+After completing all tasks in a phase, output:
+"[PHASE_COMPLETE] Phase N complete"
+
+This allows real-time progress tracking during implementation.`
+};
+
+/**
+ * Parse tasks from generated spec content
+ * Looks for the ```tasks code block and extracts task lines
+ * Format: - [ ] T###: Description | File: path/to/file
+ */
+function parseTasksFromSpec(specContent: string): ParsedTask[] {
+  const tasks: ParsedTask[] = [];
+
+  // Extract content within ```tasks ... ``` block
+  const tasksBlockMatch = specContent.match(/```tasks\s*([\s\S]*?)```/);
+  if (!tasksBlockMatch) {
+    // Try fallback: look for task lines anywhere in content
+    const taskLines = specContent.match(/- \[ \] T\d{3}:.*$/gm);
+    if (!taskLines) {
+      return tasks;
+    }
+    // Parse fallback task lines
+    let currentPhase: string | undefined;
+    for (const line of taskLines) {
+      const parsed = parseTaskLine(line, currentPhase);
+      if (parsed) {
+        tasks.push(parsed);
+      }
+    }
+    return tasks;
+  }
+
+  const tasksContent = tasksBlockMatch[1];
+  const lines = tasksContent.split('\n');
+
+  let currentPhase: string | undefined;
+
+  for (const line of lines) {
+    const trimmedLine = line.trim();
+
+    // Check for phase header (e.g., "## Phase 1: Foundation")
+    const phaseMatch = trimmedLine.match(/^##\s*(.+)$/);
+    if (phaseMatch) {
+      currentPhase = phaseMatch[1].trim();
+      continue;
+    }
+
+    // Check for task line
+    if (trimmedLine.startsWith('- [ ]')) {
+      const parsed = parseTaskLine(trimmedLine, currentPhase);
+      if (parsed) {
+        tasks.push(parsed);
+      }
+    }
+  }
+
+  return tasks;
+}
+
+/**
+ * Parse a single task line
+ * Format: - [ ] T###: Description | File: path/to/file
+ */
+function parseTaskLine(line: string, currentPhase?: string): ParsedTask | null {
+  // Match pattern: - [ ] T###: Description | File: path
+  const taskMatch = line.match(/- \[ \] (T\d{3}):\s*([^|]+)(?:\|\s*File:\s*(.+))?$/);
+  if (!taskMatch) {
+    // Try simpler pattern without file
+    const simpleMatch = line.match(/- \[ \] (T\d{3}):\s*(.+)$/);
+    if (simpleMatch) {
+      return {
+        id: simpleMatch[1],
+        description: simpleMatch[2].trim(),
+        phase: currentPhase,
+        status: 'pending',
+      };
+    }
+    return null;
+  }
+
+  return {
+    id: taskMatch[1],
+    description: taskMatch[2].trim(),
+    filePath: taskMatch[3]?.trim(),
+    phase: currentPhase,
+    status: 'pending',
+  };
+}
+
+// Feature type is imported from feature-loader.js
+// Extended type with planning fields for local use
+interface FeatureWithPlanning extends Feature {
+  planningMode?: PlanningMode;
+  planSpec?: PlanSpec;
+  requirePlanApproval?: boolean;
+}
 
 interface RunningFeature {
   featureId: string;
@@ -43,14 +316,139 @@ interface AutoLoopState {
   isRunning: boolean;
 }
 
+interface PendingApproval {
+  resolve: (result: { approved: boolean; editedPlan?: string; feedback?: string }) => void;
+  reject: (error: Error) => void;
+  featureId: string;
+  projectPath: string;
+}
+
+interface AutoModeConfig {
+  maxConcurrency: number;
+  useWorktrees: boolean;
+  projectPath: string;
+}
+
 export class AutoModeService {
   private events: EventEmitter;
   private runningFeatures = new Map<string, RunningFeature>();
   private autoLoop: AutoLoopState | null = null;
   private featureLoader = new FeatureLoader();
+  private autoLoopRunning = false;
+  private autoLoopAbortController: AbortController | null = null;
+  private config: AutoModeConfig | null = null;
+  private pendingApprovals = new Map<string, PendingApproval>();
 
   constructor(events: EventEmitter) {
     this.events = events;
+  }
+
+  /**
+   * Start the auto mode loop - continuously picks and executes pending features
+   */
+  async startAutoLoop(projectPath: string, maxConcurrency = 3): Promise<void> {
+    if (this.autoLoopRunning) {
+      throw new Error("Auto mode is already running");
+    }
+
+    this.autoLoopRunning = true;
+    this.autoLoopAbortController = new AbortController();
+    this.config = {
+      maxConcurrency,
+      useWorktrees: true,
+      projectPath,
+    };
+
+    this.emitAutoModeEvent("auto_mode_started", {
+      message: `Auto mode started with max ${maxConcurrency} concurrent features`,
+      projectPath,
+    });
+
+    // Run the loop in the background
+    this.runAutoLoop().catch((error) => {
+      console.error("[AutoMode] Loop error:", error);
+      const errorInfo = classifyError(error);
+      this.emitAutoModeEvent("auto_mode_error", {
+        error: errorInfo.message,
+        errorType: errorInfo.type,
+      });
+    });
+  }
+
+  private async runAutoLoop(): Promise<void> {
+    while (
+      this.autoLoopRunning &&
+      this.autoLoopAbortController &&
+      !this.autoLoopAbortController.signal.aborted
+    ) {
+      try {
+        // Check if we have capacity
+        if (this.runningFeatures.size >= (this.config?.maxConcurrency || 3)) {
+          await this.sleep(5000);
+          continue;
+        }
+
+        // Load pending features
+        const pendingFeatures = await this.loadPendingFeatures(
+          this.config!.projectPath
+        );
+
+        if (pendingFeatures.length === 0) {
+          this.emitAutoModeEvent("auto_mode_idle", {
+            message: "No pending features - auto mode idle",
+            projectPath: this.config!.projectPath,
+          });
+          await this.sleep(10000);
+          continue;
+        }
+
+        // Find a feature not currently running
+        const nextFeature = pendingFeatures.find(
+          (f) => !this.runningFeatures.has(f.id)
+        );
+
+        if (nextFeature) {
+          // Start feature execution in background
+          this.executeFeature(
+            this.config!.projectPath,
+            nextFeature.id,
+            this.config!.useWorktrees,
+            true
+          ).catch((error) => {
+            console.error(`[AutoMode] Feature ${nextFeature.id} error:`, error);
+          });
+        }
+
+        await this.sleep(2000);
+      } catch (error) {
+        console.error("[AutoMode] Loop iteration error:", error);
+        await this.sleep(5000);
+      }
+    }
+
+    this.autoLoopRunning = false;
+  }
+
+  /**
+   * Stop the auto mode loop
+   */
+  async stopAutoLoop(): Promise<number> {
+    const wasRunning = this.autoLoopRunning;
+    this.autoLoopRunning = false;
+    if (this.autoLoopAbortController) {
+      this.autoLoopAbortController.abort();
+      this.autoLoopAbortController = null;
+    }
+
+    // Emit stop event immediately when user explicitly stops
+    if (wasRunning) {
+      this.emitAutoModeEvent("auto_mode_stopped", {
+        message: "Auto mode stopped",
+        projectPath: this.config?.projectPath,
+      });
+    }
+
+    return this.runningFeatures.size;
   }
 
   /**
@@ -64,7 +462,11 @@ export class AutoModeService {
     projectPath: string,
     featureId: string,
     useWorktrees = false,
-    isAutoMode = false
+    isAutoMode = false,
+    providedWorktreePath?: string,
+    options?: {
+      continuationPrompt?: string;
+    }
   ): Promise<void> {
     if (this.runningFeatures.has(featureId)) {
       throw new Error("already running");
@@ -152,8 +554,28 @@ export class AutoModeService {
       // Update feature status to in_progress
       await this.updateFeatureStatus(projectPath, featureId, "in_progress");
 
-      // Build the prompt
-      const prompt = this.buildFeaturePrompt(feature);
+      // Build the prompt - use continuation prompt if provided (for recovery after plan approval)
+      let prompt: string;
+      if (options?.continuationPrompt) {
+        // Continuation prompt is used when recovering from a plan approval
+        // The plan was already approved, so skip the planning phase
+        prompt = options.continuationPrompt;
+        console.log(`[AutoMode] Using continuation prompt for feature ${featureId}`);
+      } else {
+        // Normal flow: build prompt with planning phase
+        const featurePrompt = this.buildFeaturePrompt(feature);
+        const planningPrefix = this.getPlanningPromptPrefix(feature);
+        prompt = planningPrefix + featurePrompt;
+
+        // Emit planning mode info
+        if (feature.planningMode && feature.planningMode !== 'skip') {
+          this.emitAutoModeEvent('planning_started', {
+            featureId: feature.id,
+            mode: feature.planningMode,
+            message: `Starting ${feature.planningMode} planning phase`
+          });
+        }
+      }
 
       // Extract image paths from feature
       const imagePaths = feature.imagePaths?.map((img) =>
@@ -174,7 +596,12 @@ export class AutoModeService {
         abortController,
         projectPath,
         imagePaths,
-        model
+        model,
+        {
+          projectPath,
+          planningMode: feature.planningMode,
+          requirePlanApproval: feature.requirePlanApproval,
+        }
       );
 
       // Mark as waiting_approval for user review
@@ -208,11 +635,13 @@ export class AutoModeService {
         this.emitAutoModeEvent("auto_mode_error", {
           featureId,
           error: errorInfo.message,
-          errorType: errorInfo.isAuth ? "authentication" : "execution",
+          errorType: errorInfo.type,
           projectPath,
         });
       }
     } finally {
+      console.log(`[AutoMode] Feature ${featureId} execution ended, cleaning up runningFeatures`);
+      console.log(`[AutoMode] Pending approvals at cleanup: ${Array.from(this.pendingApprovals.keys()).join(', ') || 'none'}`);
       this.runningFeatures.delete(featureId);
     }
   }
@@ -225,6 +654,9 @@ export class AutoModeService {
     if (!running) {
       return false;
     }
+
+    // Cancel any pending plan approval for this feature
+    this.cancelPlanApproval(featureId);
 
     running.abortController.abort();
     return true;
@@ -437,6 +869,7 @@ Address the follow-up instructions above. Review the previous work and make the 
       }
 
       // Use fullPrompt (already built above) with model and all images
+      // Note: Follow-ups skip planning mode - they continue from previous work
       // Pass previousContext so the history is preserved in the output file
       await this.runAgent(
         workDir,
@@ -446,7 +879,11 @@ Address the follow-up instructions above. Review the previous work and make the 
         projectPath,
         allImagePaths.length > 0 ? allImagePaths : imagePaths,
         model,
-        previousContext || undefined
+        {
+          projectPath,
+          planningMode: 'skip', // Follow-ups don't require approval
+          previousContent: previousContext || undefined,
+        }
       );
 
       // Mark as waiting_approval for user review
@@ -463,10 +900,12 @@ Address the follow-up instructions above. Review the previous work and make the 
         projectPath,
       });
     } catch (error) {
-      if (!isAbortError(error)) {
+      const errorInfo = classifyError(error);
+      if (!errorInfo.isCancellation) {
         this.emitAutoModeEvent("auto_mode_error", {
           featureId,
-          error: (error as Error).message,
+          error: errorInfo.message,
+          errorType: errorInfo.type,
           projectPath,
         });
       }
@@ -718,68 +1157,16 @@ Format your response as a structured markdown document.`;
         projectPath,
       });
     } catch (error) {
+      const errorInfo = classifyError(error);
       this.emitAutoModeEvent("auto_mode_error", {
         featureId: analysisFeatureId,
-        error: (error as Error).message,
+        error: errorInfo.message,
+        errorType: errorInfo.type,
         projectPath,
       });
     }
   }
 
-  /**
-   * Start the auto loop to process pending features
-   * @param projectPath - The project path
-   * @param maxConcurrency - Maximum number of features to process concurrently
-   * @returns Promise that resolves when the loop stops
-   */
-  async startAutoLoop(
-    projectPath: string,
-    maxConcurrency: number
-  ): Promise<void> {
-    if (this.autoLoop?.isRunning) {
-      throw new Error("Auto mode is already running");
-    }
-
-    const abortController = new AbortController();
-    this.autoLoop = {
-      projectPath,
-      maxConcurrency,
-      abortController,
-      isRunning: true,
-    };
-
-    // Emit start event
-    this.emitAutoModeEvent("auto_mode_started", {
-      projectPath,
-      message: `Auto mode started with max concurrency: ${maxConcurrency}`,
-    });
-
-    // Start the loop
-    return this.runAutoLoop();
-  }
-
-  /**
-   * Stop the auto loop
-   * @returns Number of running features (should be 0 after stopping)
-   */
-  async stopAutoLoop(): Promise<number> {
-    if (!this.autoLoop?.isRunning) {
-      return 0;
-    }
-
-    const runningCount = this.runningFeatures.size;
-    this.autoLoop.abortController.abort();
-    this.autoLoop.isRunning = false;
-    this.autoLoop = null;
-
-    // Emit stop event
-    this.emitAutoModeEvent("auto_mode_stopped", {
-      message: "Auto mode stopped",
-      runningCount,
-    });
-
-    return runningCount;
-  }
 
   /**
    * Get current status
@@ -813,90 +1200,160 @@ Format your response as a structured markdown document.`;
     }));
   }
 
-  // Private helpers
+  /**
+   * Wait for plan approval from the user.
+   * Returns a promise that resolves when the user approves/rejects the plan.
+   */
+  waitForPlanApproval(
+    featureId: string,
+    projectPath: string
+  ): Promise<{ approved: boolean; editedPlan?: string; feedback?: string }> {
+    console.log(`[AutoMode] Registering pending approval for feature ${featureId}`);
+    console.log(`[AutoMode] Current pending approvals: ${Array.from(this.pendingApprovals.keys()).join(', ') || 'none'}`);
+    return new Promise((resolve, reject) => {
+      this.pendingApprovals.set(featureId, {
+        resolve,
+        reject,
+        featureId,
+        projectPath,
+      });
+      console.log(`[AutoMode] Pending approval registered for feature ${featureId}`);
+    });
+  }
 
   /**
-   * Run the auto loop to process pending features
+   * Resolve a pending plan approval.
+   * Called when the user approves or rejects the plan via API.
    */
-  private async runAutoLoop(): Promise<void> {
-    if (!this.autoLoop) {
-      return;
-    }
+  async resolvePlanApproval(
+    featureId: string,
+    approved: boolean,
+    editedPlan?: string,
+    feedback?: string,
+    projectPathFromClient?: string
+  ): Promise<{ success: boolean; error?: string }> {
+    console.log(`[AutoMode] resolvePlanApproval called for feature ${featureId}, approved=${approved}`);
+    console.log(`[AutoMode] Current pending approvals: ${Array.from(this.pendingApprovals.keys()).join(', ') || 'none'}`);
+    const pending = this.pendingApprovals.get(featureId);
 
-    const { projectPath, maxConcurrency, abortController } = this.autoLoop;
-    const runningPromises = new Map<string, Promise<void>>();
+    if (!pending) {
+      console.log(`[AutoMode] No pending approval in Map for feature ${featureId}`);
 
-    try {
-      while (!abortController.signal.aborted && this.autoLoop.isRunning) {
-        // Get all features
-        const allFeatures = await this.featureLoader.getAll(projectPath);
+      // RECOVERY: If no pending approval but we have projectPath from client,
+      // check if feature's planSpec.status is 'generated' and handle recovery
+      if (projectPathFromClient) {
+        console.log(`[AutoMode] Attempting recovery with projectPath: ${projectPathFromClient}`);
+        const feature = await this.loadFeature(projectPathFromClient, featureId);
 
-        // Filter to pending features that aren't already running
-        const pendingFeatures = allFeatures.filter(
-          (feature) =>
-            feature.status === "pending" &&
-            !this.runningFeatures.has(feature.id) &&
-            !runningPromises.has(feature.id)
-        );
+        if (feature?.planSpec?.status === 'generated') {
+          console.log(`[AutoMode] Feature ${featureId} has planSpec.status='generated', performing recovery`);
 
-        // Start new features up to max concurrency
-        while (
-          runningPromises.size < maxConcurrency &&
-          pendingFeatures.length > 0 &&
-          !abortController.signal.aborted
-        ) {
-          const feature = pendingFeatures.shift();
-          if (!feature) break;
-
-          const promise = this.executeFeature(
-            projectPath,
-            feature.id,
-            true, // useWorktrees
-            true // isAutoMode
-          )
-            .catch((error) => {
-              console.error(
-                `[AutoMode] Feature ${feature.id} failed in auto loop:`,
-                error
-              );
-            })
-            .finally(() => {
-              runningPromises.delete(feature.id);
+          if (approved) {
+            // Update planSpec to approved
+            await this.updateFeaturePlanSpec(projectPathFromClient, featureId, {
+              status: 'approved',
+              approvedAt: new Date().toISOString(),
+              reviewedByUser: true,
+              content: editedPlan || feature.planSpec.content,
             });
 
-          runningPromises.set(feature.id, promise);
-        }
+            // Build continuation prompt and re-run the feature
+            const planContent = editedPlan || feature.planSpec.content || '';
+            let continuationPrompt = `The plan/specification has been approved. `;
+            if (feedback) {
+              continuationPrompt += `\n\nUser feedback: ${feedback}\n\n`;
+            }
+            continuationPrompt += `Now proceed with the implementation as specified in the plan:\n\n${planContent}\n\nImplement the feature now.`;
 
-        // Wait a bit before checking again
-        if (runningPromises.size > 0) {
-          await Promise.race([
-            Promise.allSettled(Array.from(runningPromises.values())),
-            new Promise<void>((resolve) => {
-              abortController.signal.addEventListener(
-                "abort",
-                () => resolve(),
-                {
-                  once: true,
-                }
-              );
-            }),
-          ]);
-        } else {
-          // No features running, wait before checking again
-          await this.sleep(1000, abortController.signal);
+            console.log(`[AutoMode] Starting recovery execution for feature ${featureId}`);
+
+            // Start feature execution with the continuation prompt (async, don't await)
+            // Pass undefined for providedWorktreePath, use options for continuation prompt
+            this.executeFeature(projectPathFromClient, featureId, true, false, undefined, {
+              continuationPrompt,
+            })
+              .catch((error) => {
+                console.error(`[AutoMode] Recovery execution failed for feature ${featureId}:`, error);
+              });
+
+            return { success: true };
+          } else {
+            // Rejected - update status and emit event
+            await this.updateFeaturePlanSpec(projectPathFromClient, featureId, {
+              status: 'rejected',
+              reviewedByUser: true,
+            });
+
+            await this.updateFeatureStatus(projectPathFromClient, featureId, 'backlog');
+
+            this.emitAutoModeEvent('plan_rejected', {
+              featureId,
+              projectPath: projectPathFromClient,
+              feedback,
+            });
+
+            return { success: true };
+          }
         }
       }
-    } catch (error) {
-      if (!isAbortError(error)) {
-        console.error("[AutoMode] Auto loop error:", error);
-      }
-    } finally {
-      // Wait for all running features to complete
-      if (runningPromises.size > 0) {
-        await Promise.allSettled(Array.from(runningPromises.values()));
-      }
+
+      console.log(`[AutoMode] ERROR: No pending approval found for feature ${featureId} and recovery not possible`);
+      return { success: false, error: `No pending approval for feature ${featureId}` };
+    }
+    console.log(`[AutoMode] Found pending approval for feature ${featureId}, proceeding...`);
+
+    const { projectPath } = pending;
+
+    // Update feature's planSpec status
+    await this.updateFeaturePlanSpec(projectPath, featureId, {
+      status: approved ? 'approved' : 'rejected',
+      approvedAt: approved ? new Date().toISOString() : undefined,
+      reviewedByUser: true,
+      content: editedPlan, // Update content if user provided an edited version
+    });
+
+    // If rejected with feedback, we can store it for the user to see
+    if (!approved && feedback) {
+      // Emit event so client knows the rejection reason
+      this.emitAutoModeEvent('plan_rejected', {
+        featureId,
+        projectPath,
+        feedback,
+      });
+    }
+
+    // Resolve the promise with all data including feedback
+    pending.resolve({ approved, editedPlan, feedback });
+    this.pendingApprovals.delete(featureId);
+
+    return { success: true };
+  }
+
+  /**
+   * Cancel a pending plan approval (e.g., when feature is stopped).
+   */
+  cancelPlanApproval(featureId: string): void {
+    console.log(`[AutoMode] cancelPlanApproval called for feature ${featureId}`);
+    console.log(`[AutoMode] Current pending approvals: ${Array.from(this.pendingApprovals.keys()).join(', ') || 'none'}`);
+    const pending = this.pendingApprovals.get(featureId);
+    if (pending) {
+      console.log(`[AutoMode] Found and cancelling pending approval for feature ${featureId}`);
+      pending.reject(new Error('Plan approval cancelled - feature was stopped'));
+      this.pendingApprovals.delete(featureId);
+    } else {
+      console.log(`[AutoMode] No pending approval to cancel for feature ${featureId}`);
     }
   }
+
+  /**
+   * Check if a feature has a pending plan approval.
+   */
+  hasPendingApproval(featureId: string): boolean {
+    return this.pendingApprovals.has(featureId);
+  }
+
+  // Private helpers
+
 
   /**
    * Find an existing worktree for a given branch by checking git worktree list
@@ -1049,6 +1506,100 @@ Format your response as a structured markdown document.`;
   }
 
   /**
+   * Update the planSpec of a feature
+   */
+  private async updateFeaturePlanSpec(
+    projectPath: string,
+    featureId: string,
+    updates: Partial<PlanSpec>
+  ): Promise<void> {
+    const featurePath = path.join(
+      projectPath,
+      ".automaker",
+      "features",
+      featureId,
+      "feature.json"
+    );
+
+    try {
+      const data = await fs.readFile(featurePath, "utf-8");
+      const feature = JSON.parse(data);
+
+      // Initialize planSpec if it doesn't exist
+      if (!feature.planSpec) {
+        feature.planSpec = {
+          status: 'pending',
+          version: 1,
+          reviewedByUser: false,
+        };
+      }
+
+      // Apply updates
+      Object.assign(feature.planSpec, updates);
+
+      // If content is being updated and it's a new version, increment version
+      if (updates.content && updates.content !== feature.planSpec.content) {
+        feature.planSpec.version = (feature.planSpec.version || 0) + 1;
+      }
+
+      feature.updatedAt = new Date().toISOString();
+      await fs.writeFile(featurePath, JSON.stringify(feature, null, 2));
+    } catch (error) {
+      console.error(`[AutoMode] Failed to update planSpec for ${featureId}:`, error);
+    }
+  }
+
+  private async loadPendingFeatures(projectPath: string): Promise<Feature[]> {
+    // Features are stored in .automaker directory
+    const featuresDir = getFeaturesDir(projectPath);
+
+    try {
+      const entries = await fs.readdir(featuresDir, { withFileTypes: true });
+      const allFeatures: Feature[] = [];
+      const pendingFeatures: Feature[] = [];
+
+      // Load all features (for dependency checking)
+      for (const entry of entries) {
+        if (entry.isDirectory()) {
+          const featurePath = path.join(
+            featuresDir,
+            entry.name,
+            "feature.json"
+          );
+          try {
+            const data = await fs.readFile(featurePath, "utf-8");
+            const feature = JSON.parse(data);
+            allFeatures.push(feature);
+
+            // Track pending features separately
+            if (
+              feature.status === "pending" ||
+              feature.status === "ready" ||
+              feature.status === "backlog"
+            ) {
+              pendingFeatures.push(feature);
+            }
+          } catch {
+            // Skip invalid features
+          }
+        }
+      }
+
+      // Apply dependency-aware ordering
+      const { orderedFeatures } = resolveDependencies(pendingFeatures);
+
+      // Filter to only features with satisfied dependencies
+      const readyFeatures = orderedFeatures.filter(feature =>
+        areDependenciesSatisfied(feature, allFeatures)
+      );
+
+      return readyFeatures;
+    } catch {
+      return [];
+    }
+  }
+
+  /**
    * Extract a title from feature description (first line or truncated)
    */
   private extractTitleFromDescription(description: string): string {
@@ -1064,6 +1615,30 @@ Format your response as a structured markdown document.`;
 
     // Truncate to 60 characters and add ellipsis
     return firstLine.substring(0, 57) + "...";
+  }
+
+  /**
+   * Get the planning prompt prefix based on feature's planning mode
+   */
+  private getPlanningPromptPrefix(feature: Feature): string {
+    const mode = feature.planningMode || 'skip';
+
+    if (mode === 'skip') {
+      return ''; // No planning phase
+    }
+
+    // For lite mode, use the approval variant if requirePlanApproval is true
+    let promptKey: string = mode;
+    if (mode === 'lite' && feature.requirePlanApproval === true) {
+      promptKey = 'lite_with_approval';
+    }
+
+    const planningPrompt = PLANNING_PROMPTS[promptKey as keyof typeof PLANNING_PROMPTS];
+    if (!planningPrompt) {
+      return '';
+    }
+
+    return planningPrompt + '\n\n---\n\n## Feature Request\n\n';
   }
 
   private buildFeaturePrompt(feature: Feature): string {
@@ -1148,8 +1723,26 @@ This helps parse your summary correctly in the output logs.`;
     projectPath: string,
     imagePaths?: string[],
     model?: string,
-    previousContent?: string
+    options?: {
+      projectPath?: string;
+      planningMode?: PlanningMode;
+      requirePlanApproval?: boolean;
+      previousContent?: string;
+    }
   ): Promise<void> {
+    const finalProjectPath = options?.projectPath || projectPath;
+    const planningMode = options?.planningMode || 'skip';
+    const previousContent = options?.previousContent;
+
+    // Check if this planning mode can generate a spec/plan that needs approval
+    // - spec and full always generate specs
+    // - lite only generates approval-ready content when requirePlanApproval is true
+    const planningModeRequiresApproval =
+      planningMode === 'spec' ||
+      planningMode === 'full' ||
+      (planningMode === 'lite' && options?.requirePlanApproval === true);
+    const requiresApproval = planningModeRequiresApproval && options?.requirePlanApproval === true;
+
     // CI/CD Mock Mode: Return early with mock response when AUTOMAKER_MOCK_AGENT is set
     // This prevents actual API calls during automated testing
     if (process.env.AUTOMAKER_MOCK_AGENT === "true") {
@@ -1224,7 +1817,7 @@ This mock response was generated because AUTOMAKER_MOCK_AGENT=true was set.
     const allowedTools = sdkOptions.allowedTools as string[] | undefined;
 
     console.log(
-      `[AutoMode] runAgent called for feature ${featureId} with model: ${finalModel}`
+      `[AutoMode] runAgent called for feature ${featureId} with model: ${finalModel}, planningMode: ${planningMode}, requiresApproval: ${requiresApproval}`
     );
 
     // Get provider for this model
@@ -1242,7 +1835,7 @@ This mock response was generated because AUTOMAKER_MOCK_AGENT=true was set.
       false // don't duplicate paths in text
     );
 
-    const options: ExecuteOptions = {
+    const executeOptions: ExecuteOptions = {
       prompt: promptContent,
       model: finalModel,
       maxTurns: maxTurns,
@@ -1252,11 +1845,13 @@ This mock response was generated because AUTOMAKER_MOCK_AGENT=true was set.
     };
 
     // Execute via provider
-    const stream = provider.executeQuery(options);
+    const stream = provider.executeQuery(executeOptions);
     // Initialize with previous content if this is a follow-up, with a separator
     let responseText = previousContent
       ? `${previousContent}\n\n---\n\n## Follow-up Session\n\n`
       : "";
+    let specDetected = false;
+
     // Agent output goes to .automaker directory
     // Note: We use projectPath here, not workDir, because workDir might be a worktree path
     const featureDirForOutput = getFeatureDir(projectPath, featureId);
@@ -1290,7 +1885,7 @@ This mock response was generated because AUTOMAKER_MOCK_AGENT=true was set.
       }, WRITE_DEBOUNCE_MS);
     };
 
-    for await (const msg of stream) {
+    streamLoop: for await (const msg of stream) {
       if (msg.type === "assistant" && msg.message?.content) {
         for (const block of msg.message.content) {
           if (block.type === "text") {
@@ -1320,10 +1915,399 @@ This mock response was generated because AUTOMAKER_MOCK_AGENT=true was set.
             // Schedule incremental file write (debounced)
             scheduleWrite();
 
-            this.emitAutoModeEvent("auto_mode_progress", {
-              featureId,
-              content: block.text,
-            });
+            // Check for [SPEC_GENERATED] marker in planning modes (spec or full)
+            if (planningModeRequiresApproval && !specDetected && responseText.includes('[SPEC_GENERATED]')) {
+              specDetected = true;
+
+              // Extract plan content (everything before the marker)
+              const markerIndex = responseText.indexOf('[SPEC_GENERATED]');
+              const planContent = responseText.substring(0, markerIndex).trim();
+
+              // Parse tasks from the generated spec (for spec and full modes)
+              // Use let since we may need to update this after plan revision
+              let parsedTasks = parseTasksFromSpec(planContent);
+              const tasksTotal = parsedTasks.length;
+
+              console.log(`[AutoMode] Parsed ${tasksTotal} tasks from spec for feature ${featureId}`);
+              if (parsedTasks.length > 0) {
+                console.log(`[AutoMode] Tasks: ${parsedTasks.map(t => t.id).join(', ')}`);
+              }
+
+              // Update planSpec status to 'generated' and save content with parsed tasks
+              await this.updateFeaturePlanSpec(projectPath, featureId, {
+                status: 'generated',
+                content: planContent,
+                version: 1,
+                generatedAt: new Date().toISOString(),
+                reviewedByUser: false,
+                tasks: parsedTasks,
+                tasksTotal,
+                tasksCompleted: 0,
+              });
+
+              let approvedPlanContent = planContent;
+              let userFeedback: string | undefined;
+              let currentPlanContent = planContent;
+              let planVersion = 1;
+
+              // Only pause for approval if requirePlanApproval is true
+              if (requiresApproval) {
+                // ========================================
+                // PLAN REVISION LOOP
+                // Keep regenerating plan until user approves
+                // ========================================
+                let planApproved = false;
+
+                while (!planApproved) {
+                  console.log(`[AutoMode] Spec v${planVersion} generated for feature ${featureId}, waiting for approval`);
+
+                  // CRITICAL: Register pending approval BEFORE emitting event
+                  const approvalPromise = this.waitForPlanApproval(featureId, projectPath);
+
+                  // Emit plan_approval_required event
+                  this.emitAutoModeEvent('plan_approval_required', {
+                    featureId,
+                    projectPath,
+                    planContent: currentPlanContent,
+                    planningMode,
+                    planVersion,
+                  });
+
+                  // Wait for user response
+                  try {
+                    const approvalResult = await approvalPromise;
+
+                    if (approvalResult.approved) {
+                      // User approved the plan
+                      console.log(`[AutoMode] Plan v${planVersion} approved for feature ${featureId}`);
+                      planApproved = true;
+
+                      // If user provided edits, use the edited version
+                      if (approvalResult.editedPlan) {
+                        approvedPlanContent = approvalResult.editedPlan;
+                        await this.updateFeaturePlanSpec(projectPath, featureId, {
+                          content: approvalResult.editedPlan,
+                        });
+                      } else {
+                        approvedPlanContent = currentPlanContent;
+                      }
+
+                      // Capture any additional feedback for implementation
+                      userFeedback = approvalResult.feedback;
+
+                      // Emit approval event
+                      this.emitAutoModeEvent('plan_approved', {
+                        featureId,
+                        projectPath,
+                        hasEdits: !!approvalResult.editedPlan,
+                        planVersion,
+                      });
+
+                    } else {
+                      // User rejected - check if they provided feedback for revision
+                      const hasFeedback = approvalResult.feedback && approvalResult.feedback.trim().length > 0;
+                      const hasEdits = approvalResult.editedPlan && approvalResult.editedPlan.trim().length > 0;
+
+                      if (!hasFeedback && !hasEdits) {
+                        // No feedback or edits = explicit cancel
+                        console.log(`[AutoMode] Plan rejected without feedback for feature ${featureId}, cancelling`);
+                        throw new Error('Plan cancelled by user');
+                      }
+
+                      // User wants revisions - regenerate the plan
+                      console.log(`[AutoMode] Plan v${planVersion} rejected with feedback for feature ${featureId}, regenerating...`);
+                      planVersion++;
+
+                      // Emit revision event
+                      this.emitAutoModeEvent('plan_revision_requested', {
+                        featureId,
+                        projectPath,
+                        feedback: approvalResult.feedback,
+                        hasEdits: !!hasEdits,
+                        planVersion,
+                      });
+
+                      // Build revision prompt
+                      let revisionPrompt = `The user has requested revisions to the plan/specification.
+
+## Previous Plan (v${planVersion - 1})
+${hasEdits ? approvalResult.editedPlan : currentPlanContent}
+
+## User Feedback
+${approvalResult.feedback || 'Please revise the plan based on the edits above.'}
+
+## Instructions
+Please regenerate the specification incorporating the user's feedback.
+Keep the same format with the \`\`\`tasks block for task definitions.
+After generating the revised spec, output:
+"[SPEC_GENERATED] Please review the revised specification above."
+`;
+
+                      // Update status to regenerating
+                      await this.updateFeaturePlanSpec(projectPath, featureId, {
+                        status: 'generating',
+                        version: planVersion,
+                      });
+
+                      // Make revision call
+                      const revisionStream = provider.executeQuery({
+                        prompt: revisionPrompt,
+                        model: finalModel,
+                        maxTurns: maxTurns || 100,
+                        cwd: workDir,
+                        allowedTools: allowedTools,
+                        abortController,
+                      });
+
+                      let revisionText = "";
+                      for await (const msg of revisionStream) {
+                        if (msg.type === "assistant" && msg.message?.content) {
+                          for (const block of msg.message.content) {
+                            if (block.type === "text") {
+                              revisionText += block.text || "";
+                              this.emitAutoModeEvent("auto_mode_progress", {
+                                featureId,
+                                content: block.text,
+                              });
+                            }
+                          }
+                        } else if (msg.type === "error") {
+                          throw new Error(msg.error || "Error during plan revision");
+                        } else if (msg.type === "result" && msg.subtype === "success") {
+                          revisionText += msg.result || "";
+                        }
+                      }
+
+                      // Extract new plan content
+                      const markerIndex = revisionText.indexOf('[SPEC_GENERATED]');
+                      if (markerIndex > 0) {
+                        currentPlanContent = revisionText.substring(0, markerIndex).trim();
+                      } else {
+                        currentPlanContent = revisionText.trim();
+                      }
+
+                      // Re-parse tasks from revised plan
+                      const revisedTasks = parseTasksFromSpec(currentPlanContent);
+                      console.log(`[AutoMode] Revised plan has ${revisedTasks.length} tasks`);
+
+                      // Update planSpec with revised content
+                      await this.updateFeaturePlanSpec(projectPath, featureId, {
+                        status: 'generated',
+                        content: currentPlanContent,
+                        version: planVersion,
+                        tasks: revisedTasks,
+                        tasksTotal: revisedTasks.length,
+                        tasksCompleted: 0,
+                      });
+
+                      // Update parsedTasks for implementation
+                      parsedTasks = revisedTasks;
+
+                      responseText += revisionText;
+                    }
+
+                  } catch (error) {
+                    if ((error as Error).message.includes('cancelled')) {
+                      throw error;
+                    }
+                    throw new Error(`Plan approval failed: ${(error as Error).message}`);
+                  }
+                }
+
+              } else {
+                // Auto-approve: requirePlanApproval is false, just continue without pausing
+                console.log(`[AutoMode] Spec generated for feature ${featureId}, auto-approving (requirePlanApproval=false)`);
+
+                // Emit info event for frontend
+                this.emitAutoModeEvent('plan_auto_approved', {
+                  featureId,
+                  projectPath,
+                  planContent,
+                  planningMode,
+                });
+
+                approvedPlanContent = planContent;
+              }
+
+              // CRITICAL: After approval, we need to make a second call to continue implementation
+              // The agent is waiting for "approved" - we need to send it and continue
+              console.log(`[AutoMode] Making continuation call after plan approval for feature ${featureId}`);
+
+              // Update planSpec status to approved (handles both manual and auto-approval paths)
+              await this.updateFeaturePlanSpec(projectPath, featureId, {
+                status: 'approved',
+                approvedAt: new Date().toISOString(),
+                reviewedByUser: requiresApproval,
+              });
+
+              // ========================================
+              // MULTI-AGENT TASK EXECUTION
+              // Each task gets its own focused agent call
+              // ========================================
+
+              if (parsedTasks.length > 0) {
+                console.log(`[AutoMode] Starting multi-agent execution: ${parsedTasks.length} tasks for feature ${featureId}`);
+
+                // Execute each task with a separate agent
+                for (let taskIndex = 0; taskIndex < parsedTasks.length; taskIndex++) {
+                  const task = parsedTasks[taskIndex];
+
+                  // Check for abort
+                  if (abortController.signal.aborted) {
+                    throw new Error('Feature execution aborted');
+                  }
+
+                  // Emit task started
+                  console.log(`[AutoMode] Starting task ${task.id}: ${task.description}`);
+                  this.emitAutoModeEvent("auto_mode_task_started", {
+                    featureId,
+                    projectPath,
+                    taskId: task.id,
+                    taskDescription: task.description,
+                    taskIndex,
+                    tasksTotal: parsedTasks.length,
+                  });
+
+                  // Update planSpec with current task
+                  await this.updateFeaturePlanSpec(projectPath, featureId, {
+                    currentTaskId: task.id,
+                  });
+
+                  // Build focused prompt for this specific task
+                  const taskPrompt = this.buildTaskPrompt(task, parsedTasks, taskIndex, approvedPlanContent, userFeedback);
+
+                  // Execute task with dedicated agent
+                  const taskStream = provider.executeQuery({
+                    prompt: taskPrompt,
+                    model: finalModel,
+                    maxTurns: Math.min(maxTurns || 100, 50), // Limit turns per task
+                    cwd: workDir,
+                    allowedTools: allowedTools,
+                    abortController,
+                  });
+
+                  let taskOutput = "";
+
+                  // Process task stream
+                  for await (const msg of taskStream) {
+                    if (msg.type === "assistant" && msg.message?.content) {
+                      for (const block of msg.message.content) {
+                        if (block.type === "text") {
+                          taskOutput += block.text || "";
+                          responseText += block.text || "";
+                          this.emitAutoModeEvent("auto_mode_progress", {
+                            featureId,
+                            content: block.text,
+                          });
+                        } else if (block.type === "tool_use") {
+                          this.emitAutoModeEvent("auto_mode_tool", {
+                            featureId,
+                            tool: block.name,
+                            input: block.input,
+                          });
+                        }
+                      }
+                    } else if (msg.type === "error") {
+                      throw new Error(msg.error || `Error during task ${task.id}`);
+                    } else if (msg.type === "result" && msg.subtype === "success") {
+                      taskOutput += msg.result || "";
+                      responseText += msg.result || "";
+                    }
+                  }
+
+                  // Emit task completed
+                  console.log(`[AutoMode] Task ${task.id} completed for feature ${featureId}`);
+                  this.emitAutoModeEvent("auto_mode_task_complete", {
+                    featureId,
+                    projectPath,
+                    taskId: task.id,
+                    tasksCompleted: taskIndex + 1,
+                    tasksTotal: parsedTasks.length,
+                  });
+
+                  // Update planSpec with progress
+                  await this.updateFeaturePlanSpec(projectPath, featureId, {
+                    tasksCompleted: taskIndex + 1,
+                  });
+
+                  // Check for phase completion (group tasks by phase)
+                  if (task.phase) {
+                    const nextTask = parsedTasks[taskIndex + 1];
+                    if (!nextTask || nextTask.phase !== task.phase) {
+                      // Phase changed, emit phase complete
+                      const phaseMatch = task.phase.match(/Phase\s*(\d+)/i);
+                      if (phaseMatch) {
+                        this.emitAutoModeEvent("auto_mode_phase_complete", {
+                          featureId,
+                          projectPath,
+                          phaseNumber: parseInt(phaseMatch[1], 10),
+                        });
+                      }
+                    }
+                  }
+                }
+
+                console.log(`[AutoMode] All ${parsedTasks.length} tasks completed for feature ${featureId}`);
+              } else {
+                // No parsed tasks - fall back to single-agent execution
+                console.log(`[AutoMode] No parsed tasks, using single-agent execution for feature ${featureId}`);
+
+                const continuationPrompt = `The plan/specification has been approved. Now implement it.
+${userFeedback ? `\n## User Feedback\n${userFeedback}\n` : ''}
+## Approved Plan
+
+${approvedPlanContent}
+
+## Instructions
+
+Implement all the changes described in the plan above.`;
+
+                const continuationStream = provider.executeQuery({
+                  prompt: continuationPrompt,
+                  model: finalModel,
+                  maxTurns: maxTurns,
+                  cwd: workDir,
+                  allowedTools: allowedTools,
+                  abortController,
+                });
+
+                for await (const msg of continuationStream) {
+                  if (msg.type === "assistant" && msg.message?.content) {
+                    for (const block of msg.message.content) {
+                      if (block.type === "text") {
+                        responseText += block.text || "";
+                        this.emitAutoModeEvent("auto_mode_progress", {
+                          featureId,
+                          content: block.text,
+                        });
+                      } else if (block.type === "tool_use") {
+                        this.emitAutoModeEvent("auto_mode_tool", {
+                          featureId,
+                          tool: block.name,
+                          input: block.input,
+                        });
+                      }
+                    }
+                  } else if (msg.type === "error") {
+                    throw new Error(msg.error || "Unknown error during implementation");
+                  } else if (msg.type === "result" && msg.subtype === "success") {
+                    responseText += msg.result || "";
+                  }
+                }
+              }
+
+              console.log(`[AutoMode] Implementation completed for feature ${featureId}`);
+              // Exit the original stream loop since continuation is done
+              break streamLoop;
+            }
+
+            // Only emit progress for non-marker text (marker was already handled above)
+            if (!specDetected) {
+              this.emitAutoModeEvent("auto_mode_progress", {
+                featureId,
+                content: block.text,
+              });
+            }
           } else if (block.type === "tool_use") {
             // Emit event for real-time UI
             this.emitAutoModeEvent("auto_mode_tool", {
@@ -1372,73 +2356,12 @@ This mock response was generated because AUTOMAKER_MOCK_AGENT=true was set.
     context: string,
     useWorktrees: boolean
   ): Promise<void> {
-    if (this.runningFeatures.has(featureId)) {
-      throw new Error("already running");
+    const feature = await this.loadFeature(projectPath, featureId);
+    if (!feature) {
+      throw new Error(`Feature ${featureId} not found`);
     }
 
-    const abortController = new AbortController();
-    // Add to running features immediately
-    const tempRunningFeature: RunningFeature = {
-      featureId,
-      projectPath,
-      worktreePath: null,
-      branchName: null,
-      abortController,
-      isAutoMode: false,
-      startTime: Date.now(),
-    };
-    this.runningFeatures.set(featureId, tempRunningFeature);
-
-    try {
-      // Emit feature start event early
-      this.emitAutoModeEvent("auto_mode_feature_start", {
-        featureId,
-        projectPath,
-        feature: {
-          id: featureId,
-          title: "Resuming...",
-          description: "Feature is resuming from previous context",
-        },
-      });
-      const feature = await this.loadFeature(projectPath, featureId);
-      if (!feature) {
-        throw new Error(`Feature ${featureId} not found`);
-      }
-
-      // Derive workDir from feature.branchName
-      // If no branchName, derive from feature ID: feature/{featureId}
-      let worktreePath: string | null = null;
-      const branchName = feature.branchName || `feature/${featureId}`;
-
-      if (useWorktrees && branchName) {
-        worktreePath = await this.findExistingWorktreeForBranch(
-          projectPath,
-          branchName
-        );
-        if (!worktreePath) {
-          worktreePath = await this.setupWorktree(
-            projectPath,
-            featureId,
-            branchName
-          );
-        }
-        console.log(
-          `[AutoMode] Resuming in worktree for branch "${branchName}": ${worktreePath}`
-        );
-      }
-
-      const workDir = worktreePath
-        ? path.resolve(worktreePath)
-        : path.resolve(projectPath);
-
-      // Update running feature with actual worktree info
-      tempRunningFeature.worktreePath = worktreePath;
-      tempRunningFeature.branchName = branchName;
-
-      // Update feature status to in_progress
-      await this.updateFeatureStatus(projectPath, featureId, "in_progress");
-
-      const prompt = `## Continuing Feature Implementation
+    const prompt = `## Continuing Feature Implementation
 
 ${this.buildFeaturePrompt(feature)}
 
@@ -1450,67 +2373,81 @@ ${context}
 ## Instructions
 Review the previous work and continue the implementation. If the feature appears complete, verify it works correctly.`;
 
-      // Extract image paths from feature
-      const imagePaths = feature.imagePaths?.map((img) =>
-        typeof img === "string" ? img : img.path
-      );
+    return this.executeFeature(projectPath, featureId, useWorktrees, false, undefined, {
+      continuationPrompt: prompt,
+    });
+  }
 
-      // Get model from feature
-      const model = resolveModelString(feature.model, DEFAULT_MODELS.claude);
-      console.log(
-        `[AutoMode] Resuming feature ${featureId} with model: ${model} in ${workDir}`
-      );
+  /**
+   * Build a focused prompt for executing a single task.
+   * Each task gets minimal context to keep the agent focused.
+   */
+  private buildTaskPrompt(
+    task: ParsedTask,
+    allTasks: ParsedTask[],
+    taskIndex: number,
+    planContent: string,
+    userFeedback?: string
+  ): string {
+    const completedTasks = allTasks.slice(0, taskIndex);
+    const remainingTasks = allTasks.slice(taskIndex + 1);
 
-      // Run the agent with context
-      await this.runAgent(
-        workDir,
-        featureId,
-        prompt,
-        abortController,
-        projectPath,
-        imagePaths,
-        model,
-        context // Pass previous context for proper file output
-      );
+    let prompt = `# Task Execution: ${task.id}
 
-      // Mark as waiting_approval for user review
-      await this.updateFeatureStatus(
-        projectPath,
-        featureId,
-        "waiting_approval"
-      );
+You are executing a specific task as part of a larger feature implementation.
 
-      this.emitAutoModeEvent("auto_mode_feature_complete", {
-        featureId,
-        passes: true,
-        message: `Feature resumed and completed in ${Math.round(
-          (Date.now() - tempRunningFeature.startTime) / 1000
-        )}s`,
-        projectPath,
-      });
-    } catch (error) {
-      const errorInfo = classifyError(error);
+## Your Current Task
 
-      if (errorInfo.isAbort) {
-        this.emitAutoModeEvent("auto_mode_feature_complete", {
-          featureId,
-          passes: false,
-          message: "Feature stopped by user",
-          projectPath,
-        });
-      } else {
-        console.error(`[AutoMode] Feature ${featureId} resume failed:`, error);
-        await this.updateFeatureStatus(projectPath, featureId, "backlog");
-        this.emitAutoModeEvent("auto_mode_error", {
-          featureId,
-          error: errorInfo.message,
-          errorType: errorInfo.isAuth ? "authentication" : "execution",
-          projectPath,
-        });
-      }
-    } finally {
-      this.runningFeatures.delete(featureId);
+**Task ID:** ${task.id}
+**Description:** ${task.description}
+${task.filePath ? `**Primary File:** ${task.filePath}` : ''}
+${task.phase ? `**Phase:** ${task.phase}` : ''}
+
+## Context
+
+`;
+
+    // Show what's already done
+    if (completedTasks.length > 0) {
+      prompt += `### Already Completed (${completedTasks.length} tasks)
+${completedTasks.map(t => `- [x] ${t.id}: ${t.description}`).join('\n')}
+
+`;
     }
+
+    // Show remaining tasks
+    if (remainingTasks.length > 0) {
+      prompt += `### Coming Up Next (${remainingTasks.length} tasks remaining)
+${remainingTasks.slice(0, 3).map(t => `- [ ] ${t.id}: ${t.description}`).join('\n')}
+${remainingTasks.length > 3 ? `... and ${remainingTasks.length - 3} more tasks` : ''}
+
+`;
+    }
+
+    // Add user feedback if any
+    if (userFeedback) {
+      prompt += `### User Feedback
+${userFeedback}
+
+`;
+    }
+
+    // Add relevant excerpt from plan (just the task-related part to save context)
+    prompt += `### Reference: Full Plan
+<details>
+${planContent}
+</details>
+
+## Instructions
+
+1. Focus ONLY on completing task ${task.id}: "${task.description}"
+2. Do not work on other tasks
+3. Use the existing codebase patterns
+4. When done, summarize what you implemented
+
+Begin implementing task ${task.id} now.`;
+
+    return prompt;
   }
 
   /**
