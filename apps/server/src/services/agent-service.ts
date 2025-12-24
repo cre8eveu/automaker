@@ -198,11 +198,14 @@ export class AgentService {
       );
 
       // Load project context files (CLAUDE.md, CODE_QUALITY.md, etc.)
-      // Note: When autoLoadClaudeMd is enabled, SDK handles CLAUDE.md loading via settingSources
-      const { formattedPrompt: contextFilesPrompt } = await loadContextFiles({
-        projectPath: effectiveWorkDir,
-        fsModule: secureFs as Parameters<typeof loadContextFiles>[0]['fsModule'],
-      });
+      // Note: When autoLoadClaudeMd is enabled, skip loading CLAUDE.md here since SDK handles it
+      // to avoid duplication. The SDK's settingSources will load CLAUDE.md from standard locations.
+      const { formattedPrompt: contextFilesPrompt } = autoLoadClaudeMd
+        ? { formattedPrompt: '' }
+        : await loadContextFiles({
+            projectPath: effectiveWorkDir,
+            fsModule: secureFs as Parameters<typeof loadContextFiles>[0]['fsModule'],
+          });
 
       // Build combined system prompt with base prompt and context files
       const baseSystemPrompt = this.getSystemPrompt();

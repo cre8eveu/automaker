@@ -559,13 +559,24 @@ export class AutoModeService {
       // Update feature status to in_progress
       await this.updateFeatureStatus(projectPath, featureId, 'in_progress');
 
+      // Load autoLoadClaudeMd setting to determine context loading strategy
+      const autoLoadClaudeMd = await getAutoLoadClaudeMdSetting(
+        projectPath,
+        this.settingsService,
+        '[AutoMode]'
+      );
+
       // Build the prompt - use continuation prompt if provided (for recovery after plan approval)
       let prompt: string;
       // Load project context files (CLAUDE.md, CODE_QUALITY.md, etc.) - passed as system prompt
-      const { formattedPrompt: contextFilesPrompt } = await loadContextFiles({
-        projectPath,
-        fsModule: secureFs as Parameters<typeof loadContextFiles>[0]['fsModule'],
-      });
+      // Note: When autoLoadClaudeMd is enabled, skip loading CLAUDE.md here since SDK handles it
+      // to avoid duplication. The SDK's settingSources will load CLAUDE.md from standard locations.
+      const { formattedPrompt: contextFilesPrompt } = autoLoadClaudeMd
+        ? { formattedPrompt: '' }
+        : await loadContextFiles({
+            projectPath,
+            fsModule: secureFs as Parameters<typeof loadContextFiles>[0]['fsModule'],
+          });
 
       if (options?.continuationPrompt) {
         // Continuation prompt is used when recovering from a plan approval
@@ -612,6 +623,7 @@ export class AutoModeService {
           planningMode: feature.planningMode,
           requirePlanApproval: feature.requirePlanApproval,
           systemPrompt: contextFilesPrompt || undefined,
+          autoLoadClaudeMd,
         }
       );
 
@@ -754,11 +766,22 @@ export class AutoModeService {
       // No previous context
     }
 
-    // Load project context files (CLAUDE.md, CODE_QUALITY.md, etc.) - passed as system prompt
-    const { formattedPrompt: contextFilesPrompt } = await loadContextFiles({
+    // Load autoLoadClaudeMd setting to determine context loading strategy
+    const autoLoadClaudeMd = await getAutoLoadClaudeMdSetting(
       projectPath,
-      fsModule: secureFs as Parameters<typeof loadContextFiles>[0]['fsModule'],
-    });
+      this.settingsService,
+      '[AutoMode]'
+    );
+
+    // Load project context files (CLAUDE.md, CODE_QUALITY.md, etc.) - passed as system prompt
+    // Note: When autoLoadClaudeMd is enabled, skip loading CLAUDE.md here since SDK handles it
+    // to avoid duplication. The SDK's settingSources will load CLAUDE.md from standard locations.
+    const { formattedPrompt: contextFilesPrompt } = autoLoadClaudeMd
+      ? { formattedPrompt: '' }
+      : await loadContextFiles({
+          projectPath,
+          fsModule: secureFs as Parameters<typeof loadContextFiles>[0]['fsModule'],
+        });
 
     // Build complete prompt with feature info, previous context, and follow-up instructions
     let fullPrompt = `## Follow-up on Feature Implementation
@@ -887,6 +910,7 @@ Address the follow-up instructions above. Review the previous work and make the 
           planningMode: 'skip', // Follow-ups don't require approval
           previousContent: previousContext || undefined,
           systemPrompt: contextFilesPrompt || undefined,
+          autoLoadClaudeMd,
         }
       );
 
@@ -1729,6 +1753,7 @@ This helps parse your summary correctly in the output logs.`;
       requirePlanApproval?: boolean;
       previousContent?: string;
       systemPrompt?: string;
+      autoLoadClaudeMd?: boolean;
     }
   ): Promise<void> {
     const finalProjectPath = options?.projectPath || projectPath;
@@ -1802,11 +1827,11 @@ This mock response was generated because AUTOMAKER_MOCK_AGENT=true was set.
     }
 
     // Load autoLoadClaudeMd setting (project setting takes precedence over global)
-    const autoLoadClaudeMd = await getAutoLoadClaudeMdSetting(
-      finalProjectPath,
-      this.settingsService,
-      '[AutoMode]'
-    );
+    // Use provided value if available, otherwise load from settings
+    const autoLoadClaudeMd =
+      options?.autoLoadClaudeMd !== undefined
+        ? options.autoLoadClaudeMd
+        : await getAutoLoadClaudeMdSetting(finalProjectPath, this.settingsService, '[AutoMode]');
 
     // Build SDK options using centralized configuration for feature implementation
     const sdkOptions = createAutoModeOptions({
