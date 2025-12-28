@@ -104,6 +104,24 @@ Your task is to analyze a GitHub issue and determine if it's valid by scanning t
 Be thorough in your analysis but focus on files that are directly relevant to the issue.`;
 
 /**
+ * Comment data structure for validation prompt
+ */
+interface ValidationComment {
+  author: string;
+  createdAt: string;
+  body: string;
+}
+
+/**
+ * Linked PR data structure for validation prompt
+ */
+interface ValidationLinkedPR {
+  number: number;
+  title: string;
+  state: string;
+}
+
+/**
  * Build the user prompt for issue validation.
  *
  * Creates a structured prompt that includes the issue details for Claude
@@ -113,26 +131,58 @@ Be thorough in your analysis but focus on files that are directly relevant to th
  * @param issueTitle - The issue title
  * @param issueBody - The issue body/description
  * @param issueLabels - Optional array of label names
+ * @param comments - Optional array of comments to include in analysis
+ * @param linkedPRs - Optional array of linked pull requests
  * @returns Formatted prompt string for the validation request
  */
 export function buildValidationPrompt(
   issueNumber: number,
   issueTitle: string,
   issueBody: string,
-  issueLabels?: string[]
+  issueLabels?: string[],
+  comments?: ValidationComment[],
+  linkedPRs?: ValidationLinkedPR[]
 ): string {
   const labelsSection = issueLabels?.length ? `\n\n**Labels:** ${issueLabels.join(', ')}` : '';
+
+  let linkedPRsSection = '';
+  if (linkedPRs && linkedPRs.length > 0) {
+    const prsText = linkedPRs
+      .map((pr) => `- PR #${pr.number} (${pr.state}): ${pr.title}`)
+      .join('\n');
+    linkedPRsSection = `\n\n### Linked Pull Requests\n\n${prsText}`;
+  }
+
+  let commentsSection = '';
+  if (comments && comments.length > 0) {
+    // Limit to most recent 10 comments to control prompt size
+    const recentComments = comments.slice(-10);
+    const commentsText = recentComments
+      .map((c) => `**${c.author}** (${new Date(c.createdAt).toLocaleDateString()}):\n${c.body}`)
+      .join('\n\n---\n\n');
+
+    commentsSection = `\n\n### Comments (${comments.length} total${comments.length > 10 ? ', showing last 10' : ''})\n\n${commentsText}`;
+  }
+
+  const hasWorkInProgress =
+    linkedPRs && linkedPRs.some((pr) => pr.state === 'open' || pr.state === 'OPEN');
+  const workInProgressNote = hasWorkInProgress
+    ? '\n\n**Note:** This issue has an open pull request linked. Consider that someone may already be working on a fix.'
+    : '';
 
   return `Please validate the following GitHub issue by analyzing the codebase:
 
 ## Issue #${issueNumber}: ${issueTitle}
 ${labelsSection}
+${linkedPRsSection}
 
 ### Description
 
 ${issueBody || '(No description provided)'}
+${commentsSection}
+${workInProgressNote}
 
 ---
 
-Scan the codebase to verify this issue. Look for the files, components, or functionality mentioned. Determine if this issue is valid, invalid, or needs clarification.`;
+Scan the codebase to verify this issue. Look for the files, components, or functionality mentioned. Determine if this issue is valid, invalid, or needs clarification.${comments && comments.length > 0 ? ' Consider the context provided in the comments as well.' : ''}${hasWorkInProgress ? ' Also note in your analysis if there is already work in progress on this issue.' : ''}`;
 }

@@ -22,6 +22,15 @@ export type IssueValidationConfidence = 'high' | 'medium' | 'low';
 export type IssueComplexity = 'trivial' | 'simple' | 'moderate' | 'complex' | 'very_complex';
 
 /**
+ * Linked PR info for validation
+ */
+export interface LinkedPRInfo {
+  number: number;
+  title: string;
+  state: string;
+}
+
+/**
  * Issue data for validation (without projectPath)
  * Used by UI when calling the validation API
  */
@@ -30,6 +39,10 @@ export interface IssueValidationInput {
   issueTitle: string;
   issueBody: string;
   issueLabels?: string[];
+  /** Comments to include in validation analysis */
+  comments?: GitHubComment[];
+  /** Linked pull requests for this issue */
+  linkedPRs?: LinkedPRInfo[];
 }
 
 /**
@@ -132,4 +145,42 @@ export interface StoredValidation {
   result: IssueValidationResult;
   /** ISO timestamp when user viewed this validation (undefined = not yet viewed) */
   viewedAt?: string;
+}
+
+/**
+ * Author of a GitHub comment
+ */
+export interface GitHubCommentAuthor {
+  login: string;
+  avatarUrl?: string;
+}
+
+/**
+ * A comment on a GitHub issue
+ */
+export interface GitHubComment {
+  /** Unique comment ID */
+  id: string;
+  /** Author of the comment */
+  author: GitHubCommentAuthor;
+  /** Comment body (markdown) */
+  body: string;
+  /** ISO timestamp when comment was created */
+  createdAt: string;
+  /** ISO timestamp when comment was last updated */
+  updatedAt?: string;
+}
+
+/**
+ * Result from fetching issue comments
+ */
+export interface IssueCommentsResult {
+  /** List of comments */
+  comments: GitHubComment[];
+  /** Total number of comments on the issue */
+  totalCount: number;
+  /** Whether there are more comments to fetch */
+  hasNextPage: boolean;
+  /** Cursor for pagination (pass to next request) */
+  endCursor?: string;
 }

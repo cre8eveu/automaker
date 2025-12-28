@@ -87,6 +87,7 @@ export type {
   IssueValidationVerdict,
   IssueValidationConfidence,
   IssueComplexity,
+  LinkedPRInfo,
   IssueValidationInput,
   IssueValidationRequest,
   IssueValidationResult,
@@ -94,6 +95,9 @@ export type {
   IssueValidationErrorResponse,
   IssueValidationEvent,
   StoredValidation,
+  GitHubCommentAuthor,
+  GitHubComment,
+  IssueCommentsResult,
 } from './issue-validation.js';
 
 // Backlog plan types

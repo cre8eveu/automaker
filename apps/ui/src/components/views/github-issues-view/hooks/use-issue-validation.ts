@@ -2,10 +2,12 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   getElectronAPI,
   GitHubIssue,
+  GitHubComment,
   IssueValidationResult,
   IssueValidationEvent,
   StoredValidation,
 } from '@/lib/electron';
+import type { LinkedPRInfo } from '@automaker/types';
 import { useAppStore } from '@/store/app-store';
 import { toast } from 'sonner';
 import { isValidationStale } from '../utils';
@@ -205,8 +207,23 @@ export function useIssueValidation({
   }, []);
 
   const handleValidateIssue = useCallback(
-    async (issue: GitHubIssue, options: { forceRevalidate?: boolean } = {}) => {
-      const { forceRevalidate = false } = options;
+    async (
+      issue: GitHubIssue,
+      options: {
+        forceRevalidate?: boolean;
+        comments?: GitHubComment[];
+        linkedPRs?: LinkedPRInfo[];
+      } = {}
+    ) => {
+      const { forceRevalidate = false, comments, linkedPRs } = options;
+      console.log('[useIssueValidation] handleValidateIssue called with:', {
+        issueNumber: issue.number,
+        forceRevalidate,
+        commentsProvided: !!comments,
+        commentsCount: comments?.length ?? 0,
+        linkedPRsProvided: !!linkedPRs,
+        linkedPRsCount: linkedPRs?.length ?? 0,
+      });
 
       if (!currentProject?.path) {
         toast.error('No project selected');
@@ -236,14 +253,23 @@ export function useIssueValidation({
       try {
         const api = getElectronAPI();
         if (api.github?.validateIssue) {
+          const validationInput = {
+            issueNumber: issue.number,
+            issueTitle: issue.title,
+            issueBody: issue.body || '',
+            issueLabels: issue.labels.map((l) => l.name),
+            comments, // Include comments if provided
+            linkedPRs, // Include linked PRs if provided
+          };
+          console.log('[useIssueValidation] Sending validation request:', {
+            hasComments: !!validationInput.comments,
+            commentsCount: validationInput.comments?.length ?? 0,
+            hasLinkedPRs: !!validationInput.linkedPRs,
+            linkedPRsCount: validationInput.linkedPRs?.length ?? 0,
+          });
           const result = await api.github.validateIssue(
             currentProject.path,
-            {
-              issueNumber: issue.number,
-              issueTitle: issue.title,
-              issueBody: issue.body || '',
-              issueLabels: issue.labels.map((l) => l.name),
-            },
+            validationInput,
             validationModel
           );
 

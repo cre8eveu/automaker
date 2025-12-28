@@ -8,7 +8,13 @@
 import type { Request, Response } from 'express';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import type { EventEmitter } from '../../../lib/events.js';
-import type { IssueValidationResult, IssueValidationEvent, AgentModel } from '@automaker/types';
+import type {
+  IssueValidationResult,
+  IssueValidationEvent,
+  AgentModel,
+  GitHubComment,
+  LinkedPRInfo,
+} from '@automaker/types';
 import { createSuggestionsOptions } from '../../../lib/sdk-options.js';
 import { writeValidation } from '../../../lib/validation-storage.js';
 import {
@@ -30,6 +36,24 @@ import { getAutoLoadClaudeMdSetting } from '../../../lib/settings-helpers.js';
 const VALID_MODELS: readonly AgentModel[] = ['opus', 'sonnet', 'haiku'] as const;
 
 /**
+ * Comment structure for validation prompt
+ */
+interface ValidationComment {
+  author: string;
+  createdAt: string;
+  body: string;
+}
+
+/**
+ * Linked PR structure for validation prompt
+ */
+interface ValidationLinkedPR {
+  number: number;
+  title: string;
+  state: string;
+}
+
+/**
  * Request body for issue validation
  */
 interface ValidateIssueRequestBody {
@@ -40,6 +64,10 @@ interface ValidateIssueRequestBody {
   issueLabels?: string[];
   /** Model to use for validation (opus, sonnet, haiku) */
   model?: AgentModel;
+  /** Comments to include in validation analysis */
+  comments?: GitHubComment[];
+  /** Linked pull requests for this issue */
+  linkedPRs?: LinkedPRInfo[];
 }
 
 /**
@@ -57,7 +85,9 @@ async function runValidation(
   model: AgentModel,
   events: EventEmitter,
   abortController: AbortController,
-  settingsService?: SettingsService
+  settingsService?: SettingsService,
+  comments?: ValidationComment[],
+  linkedPRs?: ValidationLinkedPR[]
 ): Promise<void> {
   // Emit start event
   const startEvent: IssueValidationEvent = {
@@ -76,8 +106,28 @@ async function runValidation(
   }, VALIDATION_TIMEOUT_MS);
 
   try {
-    // Build the prompt
-    const prompt = buildValidationPrompt(issueNumber, issueTitle, issueBody, issueLabels);
+    // Build the prompt (include comments and linked PRs if provided)
+    logger.info(
+      `Building validation prompt for issue #${issueNumber}` +
+        (comments?.length ? ` with ${comments.length} comments` : ' without comments') +
+        (linkedPRs?.length ? ` and ${linkedPRs.length} linked PRs` : '')
+    );
+    if (comments?.length) {
+      logger.debug(`Comments included: ${comments.map((c) => c.author).join(', ')}`);
+    }
+    if (linkedPRs?.length) {
+      logger.debug(
+        `Linked PRs: ${linkedPRs.map((pr) => `#${pr.number} (${pr.state})`).join(', ')}`
+      );
+    }
+    const prompt = buildValidationPrompt(
+      issueNumber,
+      issueTitle,
+      issueBody,
+      issueLabels,
+      comments,
+      linkedPRs
+    );
 
     // Load autoLoadClaudeMd setting
     const autoLoadClaudeMd = await getAutoLoadClaudeMdSetting(
@@ -214,7 +264,29 @@ export function createValidateIssueHandler(
         issueBody,
         issueLabels,
         model = 'opus',
+        comments: rawComments,
+        linkedPRs: rawLinkedPRs,
       } = req.body as ValidateIssueRequestBody;
+
+      // Transform GitHubComment[] to ValidationComment[] if provided
+      const validationComments: ValidationComment[] | undefined = rawComments?.map((c) => ({
+        author: c.author?.login || 'ghost',
+        createdAt: c.createdAt,
+        body: c.body,
+      }));
+
+      // Transform LinkedPRInfo[] to ValidationLinkedPR[] if provided
+      const validationLinkedPRs: ValidationLinkedPR[] | undefined = rawLinkedPRs?.map((pr) => ({
+        number: pr.number,
+        title: pr.title,
+        state: pr.state,
+      }));
+
+      logger.info(
+        `[ValidateIssue] Received validation request for issue #${issueNumber}` +
+          (rawComments?.length ? ` with ${rawComments.length} comments` : ' (no comments)') +
+          (rawLinkedPRs?.length ? ` and ${rawLinkedPRs.length} linked PRs` : '')
+      );
 
       // Validate required fields
       if (!projectPath) {
@@ -271,7 +343,9 @@ export function createValidateIssueHandler(
         model,
         events,
         abortController,
-        settingsService
+        settingsService,
+        validationComments,
+        validationLinkedPRs
       )
         .catch((error) => {
           // Error is already handled inside runValidation (event emitted)

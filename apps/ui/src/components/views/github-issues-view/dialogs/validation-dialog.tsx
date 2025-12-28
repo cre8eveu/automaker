@@ -16,6 +16,7 @@ import {
   Lightbulb,
   AlertTriangle,
   Plus,
+  GitPullRequest,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type {
@@ -146,6 +147,23 @@ export function ValidationDialog({
               <div className="flex items-center gap-2 p-3 rounded-lg bg-red-500/10 border border-red-500/20">
                 <AlertTriangle className="h-5 w-5 text-red-500 shrink-0" />
                 <span className="text-sm font-medium text-red-500">Bug Confirmed in Codebase</span>
+              </div>
+            )}
+
+            {/* Work in Progress Badge - Show when there's an open PR linked */}
+            {issue.linkedPRs?.some((pr) => pr.state === 'open' || pr.state === 'OPEN') && (
+              <div className="flex items-center gap-2 p-3 rounded-lg bg-purple-500/10 border border-purple-500/20">
+                <GitPullRequest className="h-5 w-5 text-purple-500 shrink-0" />
+                <div className="flex-1">
+                  <span className="text-sm font-medium text-purple-500">Work in Progress</span>
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    {issue.linkedPRs
+                      .filter((pr) => pr.state === 'open' || pr.state === 'OPEN')
+                      .map((pr) => `PR #${pr.number}`)
+                      .join(', ')}{' '}
+                    is open for this issue
+                  </p>
+                </div>
               </div>
             )}
 
