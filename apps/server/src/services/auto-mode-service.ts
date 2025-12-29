@@ -200,7 +200,6 @@ export class AutoModeService {
   private config: AutoModeConfig | null = null;
   private pendingApprovals = new Map<string, PendingApproval>();
   private settingsService: SettingsService | null = null;
-  private planningPrompts: Record<string, string> | null = null;
 
   constructor(events: EventEmitter, settingsService?: SettingsService) {
     this.events = events;
@@ -1603,23 +1602,6 @@ Format your response as a structured markdown document.`;
   }
 
   /**
-   * Load planning prompts from settings
-   */
-  private async loadPlanningPrompts(): Promise<void> {
-    if (this.planningPrompts) {
-      return; // Already loaded
-    }
-
-    const prompts = await getPromptCustomization(this.settingsService, '[AutoMode]');
-    this.planningPrompts = {
-      lite: prompts.autoMode.planningLite,
-      lite_with_approval: prompts.autoMode.planningLiteWithApproval,
-      spec: prompts.autoMode.planningSpec,
-      full: prompts.autoMode.planningFull,
-    };
-  }
-
-  /**
    * Get the planning prompt prefix based on feature's planning mode
    */
   private async getPlanningPromptPrefix(feature: Feature): Promise<string> {
@@ -1629,8 +1611,14 @@ Format your response as a structured markdown document.`;
       return ''; // No planning phase
     }
 
-    // Load prompts if not already loaded
-    await this.loadPlanningPrompts();
+    // Load prompts from settings (no caching - allows hot reload of custom prompts)
+    const prompts = await getPromptCustomization(this.settingsService, '[AutoMode]');
+    const planningPrompts = {
+      lite: prompts.autoMode.planningLite,
+      lite_with_approval: prompts.autoMode.planningLiteWithApproval,
+      spec: prompts.autoMode.planningSpec,
+      full: prompts.autoMode.planningFull,
+    };
 
     // For lite mode, use the approval variant if requirePlanApproval is true
     let promptKey: string = mode;
@@ -1638,7 +1626,7 @@ Format your response as a structured markdown document.`;
       promptKey = 'lite_with_approval';
     }
 
-    const planningPrompt = this.planningPrompts![promptKey];
+    const planningPrompt = planningPrompts[promptKey];
     if (!planningPrompt) {
       return '';
     }

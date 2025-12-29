@@ -76,7 +76,6 @@ export class AgentService {
   private metadataFile: string;
   private events: EventEmitter;
   private settingsService: SettingsService | null = null;
-  private agentSystemPrompt: string | null = null;
 
   constructor(dataDir: string, events: EventEmitter, settingsService?: SettingsService) {
     this.stateDir = path.join(dataDir, 'agent-sessions');
@@ -784,12 +783,9 @@ export class AgentService {
   }
 
   private async getSystemPrompt(): Promise<string> {
-    // Load from settings if not already cached
-    if (!this.agentSystemPrompt) {
-      const prompts = await getPromptCustomization(this.settingsService, '[AgentService]');
-      this.agentSystemPrompt = prompts.agent.systemPrompt;
-    }
-    return this.agentSystemPrompt;
+    // Load from settings (no caching - allows hot reload of custom prompts)
+    const prompts = await getPromptCustomization(this.settingsService, '[AgentService]');
+    return prompts.agent.systemPrompt;
   }
 
   private generateId(): string {
