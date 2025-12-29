@@ -537,7 +537,10 @@ export interface ElectronAPI {
       isMac: boolean;
       isLinux: boolean;
     }>;
-    verifyClaudeAuth: (authMethod?: 'cli' | 'api_key') => Promise<{
+    verifyClaudeAuth: (
+      authMethod?: 'cli' | 'api_key',
+      apiKey?: string
+    ) => Promise<{
       success: boolean;
       authenticated: boolean;
       error?: string;
@@ -1118,7 +1121,10 @@ interface SetupAPI {
     isMac: boolean;
     isLinux: boolean;
   }>;
-  verifyClaudeAuth: (authMethod?: 'cli' | 'api_key') => Promise<{
+  verifyClaudeAuth: (
+    authMethod?: 'cli' | 'api_key',
+    apiKey?: string
+  ) => Promise<{
     success: boolean;
     authenticated: boolean;
     error?: string;
@@ -1208,8 +1214,12 @@ function createMockSetupAPI(): SetupAPI {
       };
     },
 
-    verifyClaudeAuth: async (authMethod?: 'cli' | 'api_key') => {
-      console.log('[Mock] Verifying Claude auth with method:', authMethod);
+    verifyClaudeAuth: async (authMethod?: 'cli' | 'api_key', apiKey?: string) => {
+      console.log(
+        '[Mock] Verifying Claude auth with method:',
+        authMethod,
+        apiKey ? '(with key)' : ''
+      );
       // Mock always returns not authenticated
       return {
         success: true,

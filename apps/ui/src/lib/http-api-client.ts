@@ -491,12 +491,13 @@ export class HttpApiClient implements ElectronAPI {
     }> => this.get('/api/setup/platform'),
 
     verifyClaudeAuth: (
-      authMethod?: 'cli' | 'api_key'
+      authMethod?: 'cli' | 'api_key',
+      apiKey?: string
     ): Promise<{
       success: boolean;
       authenticated: boolean;
       error?: string;
-    }> => this.post('/api/setup/verify-claude-auth', { authMethod }),
+    }> => this.post('/api/setup/verify-claude-auth', { authMethod, apiKey }),
 
     getGhStatus: (): Promise<{
       success: boolean;

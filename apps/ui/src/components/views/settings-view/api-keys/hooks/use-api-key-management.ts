@@ -69,12 +69,22 @@ export function useApiKeyManagement() {
 
   // Test Anthropic/Claude connection
   const handleTestAnthropicConnection = async () => {
+    // Validate input first
+    if (!anthropicKey || anthropicKey.trim().length === 0) {
+      setTestResult({
+        success: false,
+        message: 'Please enter an API key to test.',
+      });
+      return;
+    }
+
     setTestingConnection(true);
     setTestResult(null);
 
     try {
       const api = getElectronAPI();
-      const data = await api.setup.verifyClaudeAuth('api_key');
+      // Pass the current input value to test unsaved keys
+      const data = await api.setup.verifyClaudeAuth('api_key', anthropicKey);
 
       if (data.success && data.authenticated) {
         setTestResult({
