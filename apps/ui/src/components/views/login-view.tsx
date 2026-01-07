@@ -3,16 +3,25 @@
  *
  * Prompts user to enter the API key shown in server console.
  * On successful login, sets an HTTP-only session cookie.
+ *
+ * On mount, verifies if an existing session is valid using exponential backoff.
+ * This handles cases where server live reloads kick users back to login
+ * even though their session is still valid.
  */
 
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from '@tanstack/react-router';
-import { login } from '@/lib/http-api-client';
+import { login, verifySession } from '@/lib/http-api-client';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { KeyRound, AlertCircle, Loader2 } from 'lucide-react';
 import { useAuthStore } from '@/store/auth-store';
 import { useSetupStore } from '@/store/setup-store';
+
+/**
+ * Delay helper for exponential backoff
+ */
+const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 export function LoginView() {
   const navigate = useNavigate();
@@ -21,6 +30,45 @@ export function LoginView() {
   const [apiKey, setApiKey] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [isCheckingSession, setIsCheckingSession] = useState(true);
+  const sessionCheckRef = useRef(false);
+
+  // Check for existing valid session on mount with exponential backoff
+  useEffect(() => {
+    // Prevent duplicate checks in strict mode
+    if (sessionCheckRef.current) return;
+    sessionCheckRef.current = true;
+
+    const checkExistingSession = async () => {
+      const maxRetries = 5;
+      const baseDelay = 500; // Start with 500ms
+
+      for (let attempt = 0; attempt < maxRetries; attempt++) {
+        try {
+          const isValid = await verifySession();
+          if (isValid) {
+            // Session is valid, redirect to the main app
+            setAuthState({ isAuthenticated: true, authChecked: true });
+            navigate({ to: setupComplete ? '/' : '/setup' });
+            return;
+          }
+          // Session is invalid, no need to retry - show login form
+          break;
+        } catch {
+          // Network error or server not ready, retry with exponential backoff
+          if (attempt < maxRetries - 1) {
+            const waitTime = baseDelay * Math.pow(2, attempt); // 500, 1000, 2000, 4000, 8000ms
+            await delay(waitTime);
+          }
+        }
+      }
+
+      // Session check complete (either invalid or all retries exhausted)
+      setIsCheckingSession(false);
+    };
+
+    checkExistingSession();
+  }, [navigate, setAuthState, setupComplete]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -44,6 +92,18 @@ export function LoginView() {
       setIsLoading(false);
     }
   };
+
+  // Show loading state while checking existing session
+  if (isCheckingSession) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-background p-4">
+        <div className="text-center space-y-4">
+          <Loader2 className="h-8 w-8 animate-spin mx-auto text-primary" />
+          <p className="text-sm text-muted-foreground">Checking session...</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="flex min-h-screen items-center justify-center bg-background p-4">
