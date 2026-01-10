@@ -88,3 +88,7 @@ docker-compose.override.yml
 
 pnpm-lock.yaml
 yarn.lock
+
+# Fork-specific workflow files (should never be committed)
+DEVELOPMENT_WORKFLOW.md
+check-sync.sh
