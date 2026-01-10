@@ -459,6 +459,14 @@ export interface PersistedTerminalSettings {
   maxSessions: number;
 }
 
+/** State for worktree init script execution */
+export interface InitScriptState {
+  status: 'idle' | 'running' | 'success' | 'failed';
+  branch: string;
+  output: string[];
+  error?: string;
+}
+
 export interface AppState {
   // Project state
   projects: Project[];
@@ -664,6 +672,9 @@ export interface AppState {
   lastProjectDir: string;
   /** Recently accessed folders for quick access */
   recentFolders: string[];
+
+  // Init Script State (per-project, keyed by project path)
+  initScriptState: Record<string, InitScriptState>;
 }
 
 // Claude Usage interface matching the server response
@@ -1095,6 +1106,12 @@ export interface AppActions {
     }>
   ) => void;
 
+  // Init Script State actions
+  setInitScriptState: (projectPath: string, state: Partial<InitScriptState>) => void;
+  appendInitScriptOutput: (projectPath: string, content: string) => void;
+  clearInitScriptState: (projectPath: string) => void;
+  getInitScriptState: (projectPath: string) => InitScriptState | null;
+
   // Reset
   reset: () => void;
 }
@@ -1195,6 +1212,7 @@ const initialState: AppState = {
   worktreePanelCollapsed: false,
   lastProjectDir: '',
   recentFolders: [],
+  initScriptState: {},
 };
 
 export const useAppStore = create<AppState & AppActions>()((set, get) => ({
@@ -3117,6 +3135,44 @@ export const useAppStore = create<AppState & AppActions>()((set, get) => ({
     // Keep max 10 recent folders
     const updated = [folder, ...filtered].slice(0, 10);
     set({ recentFolders: updated });
+  },
+
+  // Init Script State actions
+  setInitScriptState: (projectPath, state) => {
+    const current = get().initScriptState[projectPath] || {
+      status: 'idle',
+      branch: '',
+      output: [],
+    };
+    set({
+      initScriptState: {
+        ...get().initScriptState,
+        [projectPath]: { ...current, ...state },
+      },
+    });
+  },
+
+  appendInitScriptOutput: (projectPath, content) => {
+    const current = get().initScriptState[projectPath];
+    if (!current) return;
+    set({
+      initScriptState: {
+        ...get().initScriptState,
+        [projectPath]: {
+          ...current,
+          output: [...current.output, content],
+        },
+      },
+    });
+  },
+
+  clearInitScriptState: (projectPath) => {
+    const { [projectPath]: _, ...rest } = get().initScriptState;
+    set({ initScriptState: rest });
+  },
+
+  getInitScriptState: (projectPath) => {
+    return get().initScriptState[projectPath] || null;
   },
 
   // Reset

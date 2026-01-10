@@ -78,6 +78,8 @@ import {
 } from './board-view/hooks';
 import { SelectionActionBar } from './board-view/components';
 import { MassEditDialog } from './board-view/dialogs';
+import { InitScriptIndicator } from './board-view/init-script-indicator';
+import { useInitScriptEvents } from '@/hooks/use-init-script-events';
 
 // Stable empty array to avoid infinite loop in selector
 const EMPTY_WORKTREES: ReturnType<ReturnType<typeof useAppStore.getState>['getWorktrees']> = [];
@@ -254,6 +256,9 @@ export function BoardView() {
 
   // Window state hook for compact dialog mode
   const { isMaximized } = useWindowState();
+
+  // Init script events hook - subscribe to worktree init script events
+  useInitScriptEvents(currentProject?.path ?? null);
 
   // Keyboard shortcuts hook will be initialized after actions hook
 
@@ -1570,6 +1575,9 @@ export function BoardView() {
           setSelectedWorktreeForAction(null);
         }}
       />
+
+      {/* Init Script Indicator - floating overlay for worktree init script status */}
+      <InitScriptIndicator projectPath={currentProject.path} />
     </div>
   );
 }

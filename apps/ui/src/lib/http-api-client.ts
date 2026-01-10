@@ -1608,6 +1608,35 @@ export class HttpApiClient implements ElectronAPI {
     listDevServers: () => this.post('/api/worktree/list-dev-servers', {}),
     getPRInfo: (worktreePath: string, branchName: string) =>
       this.post('/api/worktree/pr-info', { worktreePath, branchName }),
+    // Init script methods
+    getInitScript: (projectPath: string) =>
+      this.post('/api/worktree/init-script', { projectPath }),
+    setInitScript: (projectPath: string, content: string) =>
+      this.put('/api/worktree/init-script', { projectPath, content }),
+    deleteInitScript: (projectPath: string) =>
+      this.delete('/api/worktree/init-script', { projectPath }),
+    onInitScriptEvent: (
+      callback: (event: {
+        type: 'worktree:init-started' | 'worktree:init-output' | 'worktree:init-completed';
+        payload: unknown;
+      }) => void
+    ) => {
+      // Note: subscribeToEvent callback receives (payload) not (_, payload)
+      const unsub1 = this.subscribeToEvent('worktree:init-started', (payload) =>
+        callback({ type: 'worktree:init-started', payload })
+      );
+      const unsub2 = this.subscribeToEvent('worktree:init-output', (payload) =>
+        callback({ type: 'worktree:init-output', payload })
+      );
+      const unsub3 = this.subscribeToEvent('worktree:init-completed', (payload) =>
+        callback({ type: 'worktree:init-completed', payload })
+      );
+      return () => {
+        unsub1();
+        unsub2();
+        unsub3();
+      };
+    },
   };
 
   // Git API
