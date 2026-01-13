@@ -36,6 +36,7 @@ import type {
 import type { Message, SessionListItem } from '@/types/electron';
 import type { Feature, ClaudeUsageResponse, CodexUsageResponse } from '@/store/app-store';
 import type { WorktreeAPI, GitAPI, ModelDefinition, ProviderStatus } from '@/types/electron';
+import type { ModelId, ThinkingLevel, ReasoningEffort } from '@automaker/types';
 import { getGlobalFileBrowser } from '@/contexts/file-browser-context';
 
 const logger = createLogger('HttpClient');
@@ -1219,6 +1220,7 @@ export class HttpApiClient implements ElectronAPI {
       success: boolean;
       hasAnthropicKey: boolean;
       hasGoogleKey: boolean;
+      hasOpenaiKey: boolean;
     }> => this.get('/api/setup/api-keys'),
 
     getPlatform: (): Promise<{
@@ -1727,6 +1729,8 @@ export class HttpApiClient implements ElectronAPI {
       }),
     commit: (worktreePath: string, message: string) =>
       this.post('/api/worktree/commit', { worktreePath, message }),
+    generateCommitMessage: (worktreePath: string) =>
+      this.post('/api/worktree/generate-commit-message', { worktreePath }),
     push: (worktreePath: string, force?: boolean) =>
       this.post('/api/worktree/push', { worktreePath, force }),
     createPR: (worktreePath: string, options?: any) =>
@@ -1902,9 +1906,17 @@ export class HttpApiClient implements ElectronAPI {
     validateIssue: (
       projectPath: string,
       issue: IssueValidationInput,
-      model?: string,
-      thinkingLevel?: string
-    ) => this.post('/api/github/validate-issue', { projectPath, ...issue, model, thinkingLevel }),
+      model?: ModelId,
+      thinkingLevel?: ThinkingLevel,
+      reasoningEffort?: ReasoningEffort
+    ) =>
+      this.post('/api/github/validate-issue', {
+        projectPath,
+        ...issue,
+        model,
+        thinkingLevel,
+        reasoningEffort,
+      }),
     getValidationStatus: (projectPath: string, issueNumber?: number) =>
       this.post('/api/github/validation-status', { projectPath, issueNumber }),
     stopValidation: (projectPath: string, issueNumber: number) =>

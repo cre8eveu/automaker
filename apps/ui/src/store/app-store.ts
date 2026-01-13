@@ -340,7 +340,7 @@ export type ClaudeModel = 'opus' | 'sonnet' | 'haiku';
 
 export interface Feature extends Omit<
   BaseFeature,
-  'steps' | 'imagePaths' | 'textFilePaths' | 'status'
+  'steps' | 'imagePaths' | 'textFilePaths' | 'status' | 'planSpec'
 > {
   id: string;
   title?: string;
@@ -354,6 +354,7 @@ export interface Feature extends Omit<
   textFilePaths?: FeatureTextFilePath[]; // Text file attachments for context
   justFinishedAt?: string; // UI-specific: ISO timestamp when agent just finished
   prUrl?: string; // UI-specific: Pull request URL
+  planSpec?: PlanSpec; // Explicit planSpec type to override BaseFeature's index signature
 }
 
 // Parsed task from spec (for spec and full planning modes)
@@ -536,6 +537,7 @@ export interface AppState {
   defaultSkipTests: boolean; // Default value for skip tests when creating new features
   enableDependencyBlocking: boolean; // When true, show blocked badges and warnings for features with incomplete dependencies (default: true)
   skipVerificationInAutoMode: boolean; // When true, auto-mode grabs features even if dependencies are not verified (only checks they're not running)
+  enableAiCommitMessages: boolean; // When true, auto-generate commit messages using AI when opening commit dialog
   planUseSelectedWorktreeBranch: boolean; // When true, Plan dialog creates features on the currently selected worktree branch
   addFeatureUseSelectedWorktreeBranch: boolean; // When true, Add Feature dialog defaults to custom mode with selected worktree branch
 
@@ -875,6 +877,9 @@ export interface AppActions {
   cycleNextProject: () => void; // Cycle forward through project history (E)
   clearProjectHistory: () => void; // Clear history, keeping only current project
   toggleProjectFavorite: (projectId: string) => void; // Toggle project favorite status
+  setProjectIcon: (projectId: string, icon: string | null) => void; // Set project icon (null to clear)
+  setProjectCustomIcon: (projectId: string, customIconPath: string | null) => void; // Set custom project icon image path (null to clear)
+  setProjectName: (projectId: string, name: string) => void; // Update project name
 
   // View actions
   setCurrentView: (view: ViewMode) => void;
@@ -934,6 +939,7 @@ export interface AppActions {
   setDefaultSkipTests: (skip: boolean) => void;
   setEnableDependencyBlocking: (enabled: boolean) => void;
   setSkipVerificationInAutoMode: (enabled: boolean) => Promise<void>;
+  setEnableAiCommitMessages: (enabled: boolean) => Promise<void>;
   setPlanUseSelectedWorktreeBranch: (enabled: boolean) => Promise<void>;
   setAddFeatureUseSelectedWorktreeBranch: (enabled: boolean) => Promise<void>;
 
@@ -1221,6 +1227,7 @@ const initialState: AppState = {
   defaultSkipTests: true, // Default to manual verification (tests disabled)
   enableDependencyBlocking: true, // Default to enabled (show dependency blocking UI)
   skipVerificationInAutoMode: false, // Default to disabled (require dependencies to be verified)
+  enableAiCommitMessages: true, // Default to enabled (auto-generate commit messages)
   planUseSelectedWorktreeBranch: true, // Default to enabled (Plan creates features on selected worktree branch)
   addFeatureUseSelectedWorktreeBranch: false, // Default to disabled (Add Feature uses normal defaults)
   useWorktrees: true, // Default to enabled (git worktree isolation)
@@ -1565,6 +1572,57 @@ export const useAppStore = create<AppState & AppActions>()((set, get) => ({
     }
   },
 
+  setProjectIcon: (projectId, icon) => {
+    const { projects, currentProject } = get();
+    const updatedProjects = projects.map((p) =>
+      p.id === projectId ? { ...p, icon: icon === null ? undefined : icon } : p
+    );
+    set({ projects: updatedProjects });
+    // Also update currentProject if it matches
+    if (currentProject?.id === projectId) {
+      set({
+        currentProject: {
+          ...currentProject,
+          icon: icon === null ? undefined : icon,
+        },
+      });
+    }
+  },
+
+  setProjectCustomIcon: (projectId, customIconPath) => {
+    const { projects, currentProject } = get();
+    const updatedProjects = projects.map((p) =>
+      p.id === projectId
+        ? { ...p, customIconPath: customIconPath === null ? undefined : customIconPath }
+        : p
+    );
+    set({ projects: updatedProjects });
+    // Also update currentProject if it matches
+    if (currentProject?.id === projectId) {
+      set({
+        currentProject: {
+          ...currentProject,
+          customIconPath: customIconPath === null ? undefined : customIconPath,
+        },
+      });
+    }
+  },
+
+  setProjectName: (projectId, name) => {
+    const { projects, currentProject } = get();
+    const updatedProjects = projects.map((p) => (p.id === projectId ? { ...p, name } : p));
+    set({ projects: updatedProjects });
+    // Also update currentProject if it matches
+    if (currentProject?.id === projectId) {
+      set({
+        currentProject: {
+          ...currentProject,
+          name,
+        },
+      });
+    }
+  },
+
   // View actions
   setCurrentView: (view) => set({ currentView: view }),
   toggleSidebar: () => set({ sidebarOpen: !get().sidebarOpen }),
@@ -1852,6 +1910,17 @@ export const useAppStore = create<AppState & AppActions>()((set, get) => ({
     // Sync to server settings file
     const { syncSettingsToServer } = await import('@/hooks/use-settings-migration');
     await syncSettingsToServer();
+  },
+  setEnableAiCommitMessages: async (enabled) => {
+    const previous = get().enableAiCommitMessages;
+    set({ enableAiCommitMessages: enabled });
+    // Sync to server settings file
+    const { syncSettingsToServer } = await import('@/hooks/use-settings-migration');
+    const ok = await syncSettingsToServer();
+    if (!ok) {
+      logger.error('Failed to sync enableAiCommitMessages setting to server - reverting');
+      set({ enableAiCommitMessages: previous });
+    }
   },
   setPlanUseSelectedWorktreeBranch: async (enabled) => {
     const previous = get().planUseSelectedWorktreeBranch;

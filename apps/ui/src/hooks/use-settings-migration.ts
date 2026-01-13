@@ -533,6 +533,8 @@ export function hydrateStoreFromSettings(settings: GlobalSettings): void {
     lastOpened: ref.lastOpened,
     theme: ref.theme,
     isFavorite: ref.isFavorite,
+    icon: ref.icon,
+    customIconPath: ref.customIconPath,
     features: [], // Features are loaded separately when project is opened
   }));
 

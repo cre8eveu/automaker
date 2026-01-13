@@ -3,7 +3,7 @@
  *
  * Scans the codebase to determine if an issue is valid, invalid, or needs clarification.
  * Runs asynchronously and emits events for progress and completion.
- * Supports both Claude models and Cursor models.
+ * Supports Claude, Codex, Cursor, and OpenCode models.
  */
 
 import type { Request, Response } from 'express';
@@ -11,13 +11,19 @@ import type { EventEmitter } from '../../../lib/events.js';
 import type {
   IssueValidationResult,
   IssueValidationEvent,
-  ModelAlias,
-  CursorModelId,
+  ModelId,
   GitHubComment,
   LinkedPRInfo,
   ThinkingLevel,
+  ReasoningEffort,
 } from '@automaker/types';
-import { isCursorModel, DEFAULT_PHASE_MODELS } from '@automaker/types';
+import {
+  DEFAULT_PHASE_MODELS,
+  isClaudeModel,
+  isCodexModel,
+  isCursorModel,
+  isOpencodeModel,
+} from '@automaker/types';
 import { resolvePhaseModel } from '@automaker/model-resolver';
 import { extractJson } from '../../../lib/json-extractor.js';
 import { writeValidation } from '../../../lib/validation-storage.js';
@@ -39,9 +45,6 @@ import {
 import type { SettingsService } from '../../../services/settings-service.js';
 import { getAutoLoadClaudeMdSetting } from '../../../lib/settings-helpers.js';
 
-/** Valid Claude model values for validation */
-const VALID_CLAUDE_MODELS: readonly ModelAlias[] = ['opus', 'sonnet', 'haiku'] as const;
-
 /**
  * Request body for issue validation
  */
@@ -51,10 +54,12 @@ interface ValidateIssueRequestBody {
   issueTitle: string;
   issueBody: string;
   issueLabels?: string[];
-  /** Model to use for validation (opus, sonnet, haiku, or cursor model IDs) */
-  model?: ModelAlias | CursorModelId;
-  /** Thinking level for Claude models (ignored for Cursor models) */
+  /** Model to use for validation (Claude alias or provider model ID) */
+  model?: ModelId;
+  /** Thinking level for Claude models (ignored for non-Claude models) */
   thinkingLevel?: ThinkingLevel;
+  /** Reasoning effort for Codex models (ignored for non-Codex models) */
+  reasoningEffort?: ReasoningEffort;
   /** Comments to include in validation analysis */
   comments?: GitHubComment[];
   /** Linked pull requests for this issue */
@@ -66,7 +71,7 @@ interface ValidateIssueRequestBody {
  *
  * Emits events for start, progress, complete, and error.
  * Stores result on completion.
- * Supports both Claude models (with structured output) and Cursor models (with JSON parsing).
+ * Supports Claude/Codex models (structured output) and Cursor/OpenCode models (JSON parsing).
  */
 async function runValidation(
   projectPath: string,
@@ -74,13 +79,14 @@ async function runValidation(
   issueTitle: string,
   issueBody: string,
   issueLabels: string[] | undefined,
-  model: ModelAlias | CursorModelId,
+  model: ModelId,
   events: EventEmitter,
   abortController: AbortController,
   settingsService?: SettingsService,
   comments?: ValidationComment[],
   linkedPRs?: ValidationLinkedPR[],
-  thinkingLevel?: ThinkingLevel
+  thinkingLevel?: ThinkingLevel,
+  reasoningEffort?: ReasoningEffort
 ): Promise<void> {
   // Emit start event
   const startEvent: IssueValidationEvent = {
@@ -111,8 +117,8 @@ async function runValidation(
 
     let responseText = '';
 
-    // Determine if we should use structured output (Claude supports it, Cursor doesn't)
-    const useStructuredOutput = !isCursorModel(model);
+    // Determine if we should use structured output (Claude/Codex support it, Cursor/OpenCode don't)
+    const useStructuredOutput = isClaudeModel(model) || isCodexModel(model);
 
     // Build the final prompt - for Cursor, include system prompt and JSON schema instructions
     let finalPrompt = basePrompt;
@@ -138,14 +144,20 @@ ${basePrompt}`;
       '[ValidateIssue]'
     );
 
-    // Use thinkingLevel from request if provided, otherwise fall back to settings
+    // Use request overrides if provided, otherwise fall back to settings
     let effectiveThinkingLevel: ThinkingLevel | undefined = thinkingLevel;
-    if (!effectiveThinkingLevel) {
+    let effectiveReasoningEffort: ReasoningEffort | undefined = reasoningEffort;
+    if (!effectiveThinkingLevel || !effectiveReasoningEffort) {
       const settings = await settingsService?.getGlobalSettings();
       const phaseModelEntry =
         settings?.phaseModels?.validationModel || DEFAULT_PHASE_MODELS.validationModel;
       const resolved = resolvePhaseModel(phaseModelEntry);
-      effectiveThinkingLevel = resolved.thinkingLevel;
+      if (!effectiveThinkingLevel) {
+        effectiveThinkingLevel = resolved.thinkingLevel;
+      }
+      if (!effectiveReasoningEffort && typeof phaseModelEntry !== 'string') {
+        effectiveReasoningEffort = phaseModelEntry.reasoningEffort;
+      }
     }
 
     logger.info(`Using model: ${model}`);
@@ -158,6 +170,7 @@ ${basePrompt}`;
       systemPrompt: useStructuredOutput ? ISSUE_VALIDATION_SYSTEM_PROMPT : undefined,
       abortController,
       thinkingLevel: effectiveThinkingLevel,
+      reasoningEffort: effectiveReasoningEffort,
       readOnly: true, // Issue validation only reads code, doesn't write
       settingSources: autoLoadClaudeMd ? ['user', 'project', 'local'] : undefined,
       outputFormat: useStructuredOutput
@@ -262,6 +275,7 @@ export function createValidateIssueHandler(
         issueLabels,
         model = 'opus',
         thinkingLevel,
+        reasoningEffort,
         comments: rawComments,
         linkedPRs: rawLinkedPRs,
       } = req.body as ValidateIssueRequestBody;
@@ -309,14 +323,17 @@ export function createValidateIssueHandler(
         return;
       }
 
-      // Validate model parameter at runtime - accept Claude models or Cursor models
-      const isValidClaudeModel = VALID_CLAUDE_MODELS.includes(model as ModelAlias);
-      const isValidCursorModel = isCursorModel(model);
+      // Validate model parameter at runtime - accept any supported provider model
+      const isValidModel =
+        isClaudeModel(model) ||
+        isCursorModel(model) ||
+        isCodexModel(model) ||
+        isOpencodeModel(model);
 
-      if (!isValidClaudeModel && !isValidCursorModel) {
+      if (!isValidModel) {
         res.status(400).json({
           success: false,
-          error: `Invalid model. Must be one of: ${VALID_CLAUDE_MODELS.join(', ')}, or a Cursor model ID`,
+          error: 'Invalid model. Must be a Claude, Cursor, Codex, or OpenCode model ID (or alias).',
         });
         return;
       }
@@ -347,7 +364,8 @@ export function createValidateIssueHandler(
         settingsService,
         validationComments,
         validationLinkedPRs,
-        thinkingLevel
+        thinkingLevel,
+        reasoningEffort
       )
         .catch(() => {
           // Error is already handled inside runValidation (event emitted)

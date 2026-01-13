@@ -21,7 +21,7 @@ import type {
   ThinkingLevel,
   PlanningMode,
 } from '@automaker/types';
-import { DEFAULT_PHASE_MODELS, stripProviderPrefix } from '@automaker/types';
+import { DEFAULT_PHASE_MODELS, isClaudeModel, stripProviderPrefix } from '@automaker/types';
 import {
   buildPromptWithImages,
   classifyError,
@@ -3586,10 +3586,29 @@ If nothing notable: {"learnings": []}`;
       const phaseModelEntry =
         settings?.phaseModels?.memoryExtractionModel || DEFAULT_PHASE_MODELS.memoryExtractionModel;
       const { model } = resolvePhaseModel(phaseModelEntry);
+      const hasClaudeKey = Boolean(process.env.ANTHROPIC_API_KEY);
+      let resolvedModel = model;
+
+      if (isClaudeModel(model) && !hasClaudeKey) {
+        const fallbackModel = feature.model
+          ? resolveModelString(feature.model, DEFAULT_MODELS.claude)
+          : null;
+        if (fallbackModel && !isClaudeModel(fallbackModel)) {
+          console.log(
+            `[AutoMode] Claude not configured for memory extraction; using feature model "${fallbackModel}".`
+          );
+          resolvedModel = fallbackModel;
+        } else {
+          console.log(
+            '[AutoMode] Claude not configured for memory extraction; skipping learning extraction.'
+          );
+          return;
+        }
+      }
 
       const result = await simpleQuery({
         prompt: userPrompt,
-        model,
+        model: resolvedModel,
         cwd: projectPath,
         maxTurns: 1,
         allowedTools: [],

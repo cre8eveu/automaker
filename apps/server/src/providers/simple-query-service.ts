@@ -15,7 +15,13 @@
  */
 
 import { ProviderFactory } from './provider-factory.js';
-import type { ProviderMessage, ContentBlock, ThinkingLevel } from '@automaker/types';
+import type {
+  ProviderMessage,
+  ContentBlock,
+  ThinkingLevel,
+  ReasoningEffort,
+} from '@automaker/types';
+import { stripProviderPrefix } from '@automaker/types';
 
 /**
  * Options for simple query execution
@@ -42,6 +48,8 @@ export interface SimpleQueryOptions {
   };
   /** Thinking level for Claude models */
   thinkingLevel?: ThinkingLevel;
+  /** Reasoning effort for Codex/OpenAI models */
+  reasoningEffort?: ReasoningEffort;
   /** If true, runs in read-only mode (no file writes) */
   readOnly?: boolean;
   /** Setting sources for CLAUDE.md loading */
@@ -97,6 +105,7 @@ const DEFAULT_MODEL = 'claude-sonnet-4-20250514';
 export async function simpleQuery(options: SimpleQueryOptions): Promise<SimpleQueryResult> {
   const model = options.model || DEFAULT_MODEL;
   const provider = ProviderFactory.getProviderForModel(model);
+  const bareModel = stripProviderPrefix(model);
 
   let responseText = '';
   let structuredOutput: Record<string, unknown> | undefined;
@@ -104,7 +113,8 @@ export async function simpleQuery(options: SimpleQueryOptions): Promise<SimpleQu
   // Build provider options
   const providerOptions = {
     prompt: options.prompt,
-    model: model,
+    model: bareModel,
+    originalModel: model,
     cwd: options.cwd,
     systemPrompt: options.systemPrompt,
     maxTurns: options.maxTurns ?? 1,
@@ -112,6 +122,7 @@ export async function simpleQuery(options: SimpleQueryOptions): Promise<SimpleQu
     abortController: options.abortController,
     outputFormat: options.outputFormat,
     thinkingLevel: options.thinkingLevel,
+    reasoningEffort: options.reasoningEffort,
     readOnly: options.readOnly,
     settingSources: options.settingSources,
   };
@@ -176,6 +187,7 @@ export async function simpleQuery(options: SimpleQueryOptions): Promise<SimpleQu
 export async function streamingQuery(options: StreamingQueryOptions): Promise<SimpleQueryResult> {
   const model = options.model || DEFAULT_MODEL;
   const provider = ProviderFactory.getProviderForModel(model);
+  const bareModel = stripProviderPrefix(model);
 
   let responseText = '';
   let structuredOutput: Record<string, unknown> | undefined;
@@ -183,7 +195,8 @@ export async function streamingQuery(options: StreamingQueryOptions): Promise<Si
   // Build provider options
   const providerOptions = {
     prompt: options.prompt,
-    model: model,
+    model: bareModel,
+    originalModel: model,
     cwd: options.cwd,
     systemPrompt: options.systemPrompt,
     maxTurns: options.maxTurns ?? 250,
@@ -191,6 +204,7 @@ export async function streamingQuery(options: StreamingQueryOptions): Promise<Si
     abortController: options.abortController,
     outputFormat: options.outputFormat,
     thinkingLevel: options.thinkingLevel,
+    reasoningEffort: options.reasoningEffort,
     readOnly: options.readOnly,
     settingSources: options.settingSources,
   };
