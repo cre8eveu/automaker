@@ -1,5 +1,6 @@
 import { useState, useCallback } from 'react';
 import { Button } from '@/components/ui/button';
+import { SkeletonPulse } from '@/components/ui/skeleton';
 import { CheckCircle2, AlertCircle, RefreshCw, XCircle } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { CursorIcon } from '@/components/ui/provider-icon';
@@ -17,10 +18,6 @@ interface CursorCliStatusProps {
   status: CursorStatus | null;
   isChecking: boolean;
   onRefresh: () => void;
-}
-
-function SkeletonPulse({ className }: { className?: string }) {
-  return <div className={cn('animate-pulse bg-muted/50 rounded', className)} />;
 }
 
 export function CursorCliStatusSkeleton() {
