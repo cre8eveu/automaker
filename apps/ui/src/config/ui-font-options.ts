@@ -5,18 +5,21 @@
  * Users must have the fonts installed on their system for them to work.
  */
 
+// Sentinel value for "use default font" - Radix Select doesn't allow empty strings
+export const DEFAULT_FONT_VALUE = 'default';
+
 export interface UIFontOption {
-  value: string; // CSS font-family value (empty string means "use default")
+  value: string; // CSS font-family value ('default' means "use default")
   label: string; // Display label for the dropdown
 }
 
 /**
  * Sans/UI fonts for headings, labels, and general text
  *
- * Empty value means "use the theme default" (Geist Sans for all themes)
+ * 'default' value means "use the theme default" (Geist Sans for all themes)
  */
 export const UI_SANS_FONT_OPTIONS: readonly UIFontOption[] = [
-  { value: '', label: 'Default (Geist Sans)' },
+  { value: DEFAULT_FONT_VALUE, label: 'Default (Geist Sans)' },
   { value: "'Inter', system-ui, sans-serif", label: 'Inter' },
   { value: "'SF Pro', system-ui, sans-serif", label: 'SF Pro' },
   { value: "'Source Sans 3', system-ui, sans-serif", label: 'Source Sans' },
@@ -28,10 +31,10 @@ export const UI_SANS_FONT_OPTIONS: readonly UIFontOption[] = [
 /**
  * Mono/code fonts for code blocks, terminals, and monospaced text
  *
- * Empty value means "use the theme default" (Geist Mono for all themes)
+ * 'default' value means "use the theme default" (Geist Mono for all themes)
  */
 export const UI_MONO_FONT_OPTIONS: readonly UIFontOption[] = [
-  { value: '', label: 'Default (Geist Mono)' },
+  { value: DEFAULT_FONT_VALUE, label: 'Default (Geist Mono)' },
   { value: "'JetBrains Mono', monospace", label: 'JetBrains Mono' },
   { value: "'Fira Code', monospace", label: 'Fira Code' },
   { value: "'SF Mono', Menlo, Monaco, monospace", label: 'SF Mono' },
@@ -48,7 +51,7 @@ export function getFontLabel(
   fontValue: string | undefined,
   options: readonly UIFontOption[]
 ): string {
-  if (!fontValue) return options[0].label;
+  if (!fontValue || fontValue === DEFAULT_FONT_VALUE) return options[0].label;
   const option = options.find((o) => o.value === fontValue);
   return option?.label ?? fontValue;
 }

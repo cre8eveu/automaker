@@ -10,7 +10,11 @@ import {
 } from '@/components/ui/select';
 import { Palette, Moon, Sun, Type } from 'lucide-react';
 import { darkThemes, lightThemes, type Theme } from '@/config/theme-options';
-import { UI_SANS_FONT_OPTIONS, UI_MONO_FONT_OPTIONS } from '@/config/ui-font-options';
+import {
+  UI_SANS_FONT_OPTIONS,
+  UI_MONO_FONT_OPTIONS,
+  DEFAULT_FONT_VALUE,
+} from '@/config/ui-font-options';
 import { cn } from '@/lib/utils';
 import { useAppStore } from '@/store/app-store';
 import type { Project } from '@/lib/electron';
@@ -27,13 +31,17 @@ export function ProjectThemeSection({ project }: ProjectThemeSectionProps) {
     setProjectFontMono,
   } = useAppStore();
   const [activeTab, setActiveTab] = useState<'dark' | 'light'>('dark');
-  const [fontSans, setFontSansLocal] = useState<string>(project.fontFamilySans || '');
-  const [fontMono, setFontMonoLocal] = useState<string>(project.fontFamilyMono || '');
+  const [fontSans, setFontSansLocal] = useState<string>(
+    project.fontFamilySans || DEFAULT_FONT_VALUE
+  );
+  const [fontMono, setFontMonoLocal] = useState<string>(
+    project.fontFamilyMono || DEFAULT_FONT_VALUE
+  );
 
   // Sync font state when project changes
   useEffect(() => {
-    setFontSansLocal(project.fontFamilySans || '');
-    setFontMonoLocal(project.fontFamilyMono || '');
+    setFontSansLocal(project.fontFamilySans || DEFAULT_FONT_VALUE);
+    setFontMonoLocal(project.fontFamilyMono || DEFAULT_FONT_VALUE);
   }, [project]);
 
   const projectTheme = project.theme as Theme | undefined;
@@ -58,14 +66,14 @@ export function ProjectThemeSection({ project }: ProjectThemeSectionProps) {
 
   const handleFontSansChange = (value: string) => {
     setFontSansLocal(value);
-    // Empty string means default, so we pass null to clear the override
-    setProjectFontSans(project.id, value || null);
+    // 'default' means use theme default, so we pass null to clear the override
+    setProjectFontSans(project.id, value === DEFAULT_FONT_VALUE ? null : value);
   };
 
   const handleFontMonoChange = (value: string) => {
     setFontMonoLocal(value);
-    // Empty string means default, so we pass null to clear the override
-    setProjectFontMono(project.id, value || null);
+    // 'default' means use theme default, so we pass null to clear the override
+    setProjectFontMono(project.id, value === DEFAULT_FONT_VALUE ? null : value);
   };
 
   return (
@@ -214,8 +222,15 @@ export function ProjectThemeSection({ project }: ProjectThemeSectionProps) {
                 </SelectTrigger>
                 <SelectContent>
                   {UI_SANS_FONT_OPTIONS.map((option) => (
-                    <SelectItem key={option.value || 'default-sans'} value={option.value}>
-                      <span style={{ fontFamily: option.value || undefined }}>{option.label}</span>
+                    <SelectItem key={option.value} value={option.value}>
+                      <span
+                        style={{
+                          fontFamily:
+                            option.value === DEFAULT_FONT_VALUE ? undefined : option.value,
+                        }}
+                      >
+                        {option.label}
+                      </span>
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -236,8 +251,15 @@ export function ProjectThemeSection({ project }: ProjectThemeSectionProps) {
                 </SelectTrigger>
                 <SelectContent>
                   {UI_MONO_FONT_OPTIONS.map((option) => (
-                    <SelectItem key={option.value || 'default-mono'} value={option.value}>
-                      <span style={{ fontFamily: option.value || undefined }}>{option.label}</span>
+                    <SelectItem key={option.value} value={option.value}>
+                      <span
+                        style={{
+                          fontFamily:
+                            option.value === DEFAULT_FONT_VALUE ? undefined : option.value,
+                        }}
+                      >
+                        {option.label}
+                      </span>
                     </SelectItem>
                   ))}
                 </SelectContent>
