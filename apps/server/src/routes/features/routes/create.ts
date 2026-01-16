@@ -23,6 +23,19 @@ export function createCreateHandler(featureLoader: FeatureLoader) {
         return;
       }
 
+      // Check for duplicate title if title is provided
+      if (feature.title && feature.title.trim()) {
+        const duplicate = await featureLoader.findDuplicateTitle(projectPath, feature.title);
+        if (duplicate) {
+          res.status(409).json({
+            success: false,
+            error: `A feature with title "${feature.title}" already exists`,
+            duplicateFeatureId: duplicate.id,
+          });
+          return;
+        }
+      }
+
       const created = await featureLoader.create(projectPath, feature);
       res.json({ success: true, feature: created });
     } catch (error) {

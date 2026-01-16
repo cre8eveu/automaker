@@ -2101,6 +2101,16 @@ Format your response as a structured markdown document.`;
         feature.justFinishedAt = undefined;
       }
       await secureFs.writeFile(featurePath, JSON.stringify(feature, null, 2));
+
+      // Sync completed/verified features to app_spec.txt
+      if (status === 'verified' || status === 'completed') {
+        try {
+          await this.featureLoader.syncFeatureToAppSpec(projectPath, feature);
+        } catch (syncError) {
+          // Log but don't fail the status update if sync fails
+          logger.warn(`Failed to sync feature ${featureId} to app_spec.txt:`, syncError);
+        }
+      }
     } catch {
       // Feature file may not exist
     }
